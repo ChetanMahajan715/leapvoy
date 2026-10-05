@@ -59,7 +59,8 @@ case "${1:-}" in
     printf 'Unattended-Upgrade::Automatic-Reboot "true";\nUnattended-Upgrade::Automatic-Reboot-Time "04:00";\n' \
       > /etc/apt/apt.conf.d/52leapvoy-auto-reboot             # security updates; reboot at 4 AM only when one needs it
     command -v fail2ban-client >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fail2ban >/dev/null
-    printf '[sshd]\nenabled = true\nbackend = systemd\nmaxretry = 5\nfindtime = 10m\nbantime = 1h\n' \
+    # journalmatch on the sshd process: Ubuntu names the unit ssh.service, fail2ban's default looks for sshd.service
+    printf '[sshd]\nenabled = true\nbackend = systemd\njournalmatch = _COMM=sshd\nmaxretry = 5\nfindtime = 10m\nbantime = 1h\n' \
       > /etc/fail2ban/jail.d/leapvoy.conf                     # 5 failed SSH logins in 10 min → that address blocked for 1 h
     systemctl enable -q fail2ban && systemctl restart fail2ban
     echo "installed: 'leapvoy' command, self-heal every minute, backup 03:30, auto-reboot after crashes/updates, swap, India time, fail2ban" ;;
