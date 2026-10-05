@@ -33,3 +33,6 @@ dist/
 .pgdata/
 .cache/
 backend/eval/data/
+
+# GitHub CLI (portable, local only)
+tools/gh/
