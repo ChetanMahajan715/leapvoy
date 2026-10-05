@@ -185,7 +185,7 @@ Fill in `.env` (see `.env.example` for every value):
 
 ```bash
 cd ~/leapvoy
-sudo deploy/leapvoy install     # leapvoy command, self-heal + backup timers, swap, India time, auto-reboot
+sudo deploy/leapvoy install     # leapvoy command, self-heal + backup timers, swap, India time, auto-reboot, fail2ban
 leapvoy on                      # first build: 10-20 min on ARM
 leapvoy status                  # every part Up, then (healthy)
 ```
@@ -225,6 +225,7 @@ Then open the address, **sign up** (the first account becomes the owner), turn o
 | Disk filling with logs | 3 × 10 MB log rotation per part | always |
 | Security updates | unattended-upgrades nightly; reboot at 04:00 only if required | nightly |
 | Data loss | `pg_dump` backup at 03:30, newest 7 kept in `~/leapvoy/backups` | nightly |
+| SSH login bots | **fail2ban**: 5 failed logins in 10 min → that address is blocked for 1 hour (logins are key-only anyway, so this just stops the noise) | instant |
 
 Not automatic (the app sends a notification): Telegram signing Leapvoy out, or an email App Password being revoked.
 `leapvoy off` stays off across reboots until `leapvoy on`.
@@ -274,6 +275,8 @@ Problems met during the real deployment, and their fixes (all fixed in the repo 
 | `No space left on device` | Old build layers | `docker system prune -f` |
 | Build killed (out of memory) | Swap missing | `free -h`; re-run `sudo deploy/leapvoy install` |
 | `leapvoy: command not found` | Install step skipped | `sudo ~/leapvoy/deploy/leapvoy install` |
+| Your own SSH login is refused after typos | fail2ban blocked your address | wait 1 hour, or from the Oracle console: `sudo fail2ban-client set sshd unbanip <your-ip>` |
+| See blocked addresses | | `sudo fail2ban-client status sshd` |
 
 ## 12. Staying free
 

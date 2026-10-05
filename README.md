@@ -91,7 +91,8 @@ inbox without your approval, and every claim in an email is checked against your
   remote sign-out, rate limits.
 - Telegram sessions and email App Passwords **encrypted with AES-GCM**, bound to the user.
 - **Every table scoped by `user_id`**, with isolation tests. Account deletion with a 7-day undo window.
-- Public server hardening: sign-ups close after the owner's account, API docs off, only HTTPS exposed.
+- Public server hardening: sign-ups close after the owner's account, API docs off, only HTTPS exposed, key-only SSH
+  with **fail2ban** blocking login bots.
 
 ## Screenshots
 

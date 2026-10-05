@@ -8,7 +8,7 @@
 #   leapvoy restore FILE  replace the database with a copy (e.g. the one moved from the laptop)
 #   leapvoy update        new code: git pull, rebuild, restart
 #   leapvoy heal          restart any part whose health check fails (runs by itself every minute)
-#   leapvoy install       one-time setup (sudo): command, self-heal, nightly backup, auto-reboot, swap, India time
+#   leapvoy install       one-time setup (sudo): command, self-heal, nightly backup, auto-reboot, swap, India time, fail2ban
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")/.."
 [ -f .env ] || { echo "No .env in $PWD (copy it from the laptop first)"; exit 1; }
@@ -58,6 +58,10 @@ case "${1:-}" in
     sysctl --system >/dev/null
     printf 'Unattended-Upgrade::Automatic-Reboot "true";\nUnattended-Upgrade::Automatic-Reboot-Time "04:00";\n' \
       > /etc/apt/apt.conf.d/52leapvoy-auto-reboot             # security updates; reboot at 4 AM only when one needs it
-    echo "installed: 'leapvoy' command, self-heal every minute, backup 03:30, auto-reboot after crashes/updates, swap, India time" ;;
+    command -v fail2ban-client >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fail2ban >/dev/null
+    printf '[sshd]\nenabled = true\nbackend = systemd\nmaxretry = 5\nfindtime = 10m\nbantime = 1h\n' \
+      > /etc/fail2ban/jail.d/leapvoy.conf                     # 5 failed SSH logins in 10 min → that address blocked for 1 h
+    systemctl enable -q fail2ban && systemctl restart fail2ban
+    echo "installed: 'leapvoy' command, self-heal every minute, backup 03:30, auto-reboot after crashes/updates, swap, India time, fail2ban" ;;
   *) sed -n '2,12p' "$0"; exit 1 ;;
 esac
