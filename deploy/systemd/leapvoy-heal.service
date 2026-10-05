@@ -1,0 +1,8 @@
+[Unit]
+Description=Leapvoy self-heal: restart any container whose health check fails
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/leapvoy heal

@@ -1,0 +1,9 @@
+[Unit]
+Description=Leapvoy backup every night at 03:30 (server time = India time)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,22 @@
+{#- Leapvoy default email template (v1). Fixed text stays as-is. AI fills only: opening_line, fit_bullets, closing_line. -#}
+Subject: {{ subject_override or ("Application for " ~ role ~ " - " ~ profile.full_name ~ (subject_extras or "")) }}
+
+Dear {{ hr_first_name or "Hiring Team" }},
+
+I am writing to apply for the {{ role }} role at {{ company | trim | trim(".") }}. {{ opening_line }}
+
+Why I am a strong fit:
+
+{% for b in fit_bullets -%}
+- {{ b.label }}: {{ b.proof }}
+{% endfor %}
+{{ closing_line }}
+
+GitHub: {{ profile.github_url }}
+LinkedIn: {{ profile.linkedin_url }}
+
+I have attached my resume and look forward to hearing from you.
+
+Best regards,
+{{ profile.full_name }}
+{{ profile.phone }}

@@ -1,0 +1,8 @@
+{
+  "name": "leapvoy-eas-tool",
+  "private": true,
+  "description": "EAS CLI for building the Leapvoy APK, kept out of the app so the build server installs only the app (run from mobile/: ../tools/eas/node_modules/.bin/eas ...)",
+  "devDependencies": {
+    "eas-cli": "^24.10.0"
+  }
+}

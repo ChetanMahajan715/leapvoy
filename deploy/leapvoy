@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Leapvoy on the server. First time:  sudo deploy/leapvoy install
+#   leapvoy on            start everything (the app works)
+#   leapvoy off           stop everything (the app shows "Leapvoy server is off"; data stays; stays off after a reboot)
+#   leapvoy status        what is running, and whether each part is healthy
+#   leapvoy logs [name]   live logs (backend, telegram, pipeline, sender, web, db)
+#   leapvoy backup        database copy into backups/ (keeps the newest 7)
+#   leapvoy restore FILE  replace the database with a copy (e.g. the one moved from the laptop)
+#   leapvoy update        new code: git pull, rebuild, restart
+#   leapvoy heal          restart any part whose health check fails (runs by itself every minute)
+#   leapvoy install       one-time setup (sudo): command, self-heal, nightly backup, auto-reboot, swap, India time
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")/.."
+[ -f .env ] || { echo "No .env in $PWD (copy it from the laptop first)"; exit 1; }
+# read only what this script needs (sourcing .env breaks on values with spaces, like Gmail App Passwords)
+env_get() { grep -m1 "^$1=" .env | cut -d= -f2- | tr -d ''; }
+C=(docker compose --env-file .env -f deploy/docker-compose.yml)
+DB_USER=$(env_get POSTGRES_USER); DB_USER=${DB_USER:-leapvoy}
+DB_NAME=$(env_get POSTGRES_DB); DB_NAME=${DB_NAME:-leapvoy}
+
+case "${1:-}" in
+  on) "${C[@]}" up -d --build ;;
+  off) "${C[@]}" stop ;;
+  status) "${C[@]}" ps --format "table {{.Service}}\t{{.Status}}" ;;
+  logs) "${C[@]}" logs -f --tail=100 ${2:-} ;;
+  backup)
+    mkdir -p backups
+    f="backups/leapvoy-$(date +%F-%H%M).sql.gz"
+    "${C[@]}" exec -T db pg_dump -U "$DB_USER" --clean --if-exists --no-owner "$DB_NAME" | gzip > "$f"
+    ls -1t backups/leapvoy-*.sql.gz | tail -n +8 | xargs -r rm --
+    echo "saved $f" ;;
+  restore)
+    [ -f "${2:-}" ] || { echo "usage: leapvoy restore FILE.sql.gz"; exit 1; }
+    "${C[@]}" up -d db
+    "${C[@]}" stop backend telegram pipeline sender web 2>/dev/null || true
+    until "${C[@]}" exec -T db pg_isready -U "$DB_USER" -d "$DB_NAME" >/dev/null; do sleep 1; done
+    gunzip -c "$2" | "${C[@]}" exec -T db psql -q -v ON_ERROR_STOP=1 -U "$DB_USER" -d "$DB_NAME"
+    "${C[@]}" up -d
+    echo "restored $2" ;;
+  update) git pull --ff-only && "${C[@]}" up -d --build ;;
+  heal)  # stuck (unhealthy) → restart; crashed ones are already restarted by Docker; parts turned off stay off
+    for id in $(docker ps -q --filter label=com.docker.compose.project=leapvoy --filter health=unhealthy); do
+      echo "restarting stuck $(docker inspect -f '{{.Name}}' "$id")"
+      docker restart "$id" >/dev/null
+    done ;;
+  install)
+    [ "$(id -u)" = 0 ] || { echo "run it with sudo: sudo deploy/leapvoy install"; exit 1; }
+    ln -sf "$PWD/deploy/leapvoy" /usr/local/bin/leapvoy
+    timedatectl set-timezone Asia/Kolkata                     # logs, backups and timers in India time
+    cp deploy/systemd/leapvoy-*.service deploy/systemd/leapvoy-*.timer /etc/systemd/system/
+    systemctl daemon-reload
+    systemctl enable --now docker leapvoy-heal.timer leapvoy-backup.timer
+    if ! swapon --show | grep -q .; then                       # a 2 GB cushion if memory ever runs short
+      fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile
+      grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
+    printf 'kernel.panic = 10\nkernel.panic_on_oops = 1\n' > /etc/sysctl.d/90-leapvoy.conf  # a kernel crash → reboot in 10 s
+    sysctl --system >/dev/null
+    printf 'Unattended-Upgrade::Automatic-Reboot "true";\nUnattended-Upgrade::Automatic-Reboot-Time "04:00";\n' \
+      > /etc/apt/apt.conf.d/52leapvoy-auto-reboot             # security updates; reboot at 4 AM only when one needs it
+    echo "installed: 'leapvoy' command, self-heal every minute, backup 03:30, auto-reboot after crashes/updates, swap, India time" ;;
+  *) sed -n '2,12p' "$0"; exit 1 ;;
+esac

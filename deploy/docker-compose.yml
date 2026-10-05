@@ -1,0 +1,106 @@
+# Run from repo root:  deploy/leapvoy on   (= docker compose --env-file .env -f deploy/docker-compose.yml up -d --build)
+# Reached only through Tailscale: `tailscale serve --bg 8080` → https://<server>.<tailnet>.ts.net (web app + /api).
+# Self-healing: a crash → Docker restarts the container (restart: always); stuck (health check fails 3 times in a row)
+# → `leapvoy heal` (systemd timer, every minute) restarts it; a reboot → Docker starts everything again.
+name: leapvoy
+
+x-logs: &logs  # logs can never fill the disk: 3 files × 10 MB per container
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+x-python: &python  # backend + 3 workers: same image, every key from .env, database inside this network
+  <<: *logs
+  build:
+    context: ..
+    dockerfile: backend/Dockerfile
+  restart: always
+  env_file: ../.env
+  environment:
+    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-leapvoy}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-leapvoy}
+    LOG_JSON: "true"
+  volumes:
+    - models:/app/.cache  # embedding model downloaded once
+
+services:
+  db:
+    <<: *logs
+    image: pgvector/pgvector:pg16  # Postgres 16 + pgvector, multi-arch (ARM64 ok)
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-leapvoy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-leapvoy}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro  # creates leapvoy_test on first start
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:  # API; runs the migrations on start
+    <<: *python
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:  # the API answers its own /health (which also checks the database)
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=8)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  telegram:  # live reader: one Telegram client per connected user (read-only)
+    <<: *python
+    command: ["python", "-m", "app.workers.telegram_reader"]
+    depends_on: [backend]
+    healthcheck:  # its loop beats every minute
+      test: ["CMD", "python", "-m", "app.core.heartbeat", "300"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+
+  pipeline:  # AI pipeline: prefilter → resume match → extract → fit score
+    <<: *python
+    command: ["python", "-m", "app.workers.pipeline"]
+    depends_on: [backend]
+    healthcheck:  # beats after every round; a round of AI checks can take many minutes
+      test: ["CMD", "python", "-m", "app.core.heartbeat", "1800"]
+      interval: 120s
+      timeout: 10s
+      retries: 3
+      start_period: 1800s
+
+  sender:  # sends due emails, checks HR replies, pushes notifications, hourly cleanup
+    <<: *python
+    command: ["python", "-m", "app.workers.sender"]
+    depends_on: [backend]
+    healthcheck:  # beats every round (30 s); reply checks and the hourly cleanup take a few minutes at most
+      test: ["CMD", "python", "-m", "app.core.heartbeat", "900"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 900s
+
+  web:  # the web app at / and the API at /api, one address for the browser and the phone app
+    <<: *logs
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+    restart: always
+    ports:
+      - "127.0.0.1:8080:80"  # localhost only; Tailscale serves it with HTTPS
+    depends_on: [backend]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  pgdata:
+  models:

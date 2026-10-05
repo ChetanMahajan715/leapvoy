@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "692268358755",
+    "project_id": "leapvoy-c491b",
+    "storage_bucket": "leapvoy-c491b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:692268358755:android:395e8fdea5a92b160b2c56",
+        "android_client_info": {
+          "package_name": "com.leapvoy.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA0Bsw1xPRQ8PcWh_dyue0i9u0Q1cKxAkM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

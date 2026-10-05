@@ -1,0 +1,10 @@
+[Unit]
+Description=Leapvoy daily database backup (keeps the newest 7)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=docker
+ExecStart=/usr/local/bin/leapvoy backup

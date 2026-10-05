@@ -1,0 +1,35 @@
+# Secrets: never commit
+.env
+*.session
+*.session-journal
+*.pem
+*.key
+secrets/
+docs/templates/profile.seed.json
+
+# Private files: resumes, server keys, backups, internal notes
+private/
+backups/
+*.bundle
+*.sql.gz
+
+# AI assistant notes (local only)
+CLAUDE.md
+AGENTS.md
+.superpowers/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node / Expo
+node_modules/
+.expo/
+dist/
+
+# Local data and downloads
+.pgdata/
+.cache/
+backend/eval/data/
