@@ -64,7 +64,7 @@ async def system_prompt(s: AsyncSession, user_id: uuid.UUID, now: datetime, inco
 # What the app shows while a tool runs (live only, never saved): long steps never look like an endless spinner
 STATUS = {
     "list_jobs": "Looking up your jobs…",
-    "list_posts": "Reading that day's posts…",
+    "list_posts": "Reading that day's jobs…",
     "search_posts": "Searching your posts…",
     "check_telegram": "Reading Telegram and checking new posts… this can take up to a minute",
     "analyze_pasted_job": "Reading the job post and checking your fit…",

@@ -41,7 +41,7 @@ def post_title(text: str) -> str:
     return next((line.strip() for line in text.splitlines() if line.strip()), "")[:80]
 
 
-def _why_not(job: Job) -> str:
+def why_not(job: Job) -> str:
     if any(f.startswith("not a target role") for f in job.flags):
         return "not your target role"
     return job.flags[0] if job.flags else "not your target role"
@@ -63,7 +63,7 @@ def describe(post: Post, jobs: list[Job], channel: str) -> dict:
             more = f" · {len(jobs)} jobs" if len(jobs) > 1 else ""
             kind, status = "fit", f"{verdict_label(good[0].verdict)} · {good[0].fit_score}/100{more}"
         else:
-            kind, status = "skipped", f"Not a fit: {_why_not(jobs[0])}"
+            kind, status = "skipped", f"Not a fit: {why_not(jobs[0])}"
     return {"id": post.id, "tg_message_id": post.tg_message_id, "posted_at": post.posted_at, "channel": channel,
             "title": post_title(post.text), "text": post.text, "kind": kind, "status": status,
             "job_ids": [j.id for j in jobs], "has_email": bool(post.emails), "has_link": bool(post.links),

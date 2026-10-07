@@ -277,3 +277,19 @@ async def test_search_posts_finds_skipped_posts_and_says_why(db, smtp):
     assert "Associate Program Manager" in r.text and "Weak match with your resume" in r.text and "No email or apply link" in r.text
     assert f"#{job}" in r.text and "Not a fit" in r.text and "batch not eligible" in r.text
     assert (await run(db, uid, "search_posts", query="nonexistentco")).text.startswith("No saved posts mention")
+
+
+async def test_chat_counts_jobs_not_posts(db, smtp):
+    """'All posts today' when one post lists three jobs: the AI hears 3 jobs, one line each, never '1 post'."""
+    uid, _ = await setup(db)
+    ch = (await db.execute(select(Channel).where(Channel.user_id == uid))).scalars().first()
+    p = Post(user_id=uid, channel_id=ch.id, tg_message_id=70, posted_at=NOW, stage="scored", text="1) A 2) B 3) C")
+    db.add(p)
+    await db.flush()
+    db.add_all([Job(user_id=uid, post_id=p.id, idx=i, company=c, role="ML Engineer", fit_score=s, verdict=v,
+                    apply_method="email") for i, (c, s, v) in enumerate([("Alpha", 85, "STRONG MATCH"),
+                                                                         ("Beta", 30, "SKIP"), ("Gamma", 70, "APPLY")])])
+    await db.commit()
+    r = await run(db, uid, "list_posts", date=NOW.astimezone(report.IST).date().isoformat())
+    assert all(f"ML Engineer · {c}" in r.text for c in ("Alpha", "Beta", "Gamma"))
+    assert "jobs in" in r.text and "Talk about JOBS" in r.text

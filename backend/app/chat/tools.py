@@ -54,8 +54,8 @@ _WHEN = {"type": "string", "description": 'India time, e.g. "now", "tomorrow 10a
 TOOLS = [
     _fn("list_jobs", "Jobs of one day that fit the user's resume (best first), shown as job cards.",
         {"date": {"type": "string", "description": '"today", "yesterday" or YYYY-MM-DD (India time)'}}),
-    _fn("list_posts", "EVERY Telegram post of one day (newest first, with Telegram's time and what happened to each: "
-        "fit, or why it was skipped), shown as post cards. Use when the user asks for all posts / everything posted.",
+    _fn("list_posts", "EVERY job posted on one day, fit or not (a Telegram post can list many jobs; each is its own "
+        "card with its own score, newest first). Use when the user asks for all jobs / all posts / everything posted.",
         {"date": {"type": "string", "description": '"today", "yesterday" or YYYY-MM-DD (India time)'}}),
     _fn("search_posts", "Find saved Telegram posts mentioning a company / role / words, INCLUDING ones Leapvoy skipped, "
         "and say what happened to each (matched job, or why it was skipped). Use when the user asks whether a "
@@ -171,24 +171,39 @@ async def analyze_pasted_job(s, user_id, ctx: Context) -> ToolResult:
                        "job_ids": [j.id for j in jobs]})
 
 
-def _post_lines(rows: list[dict], with_day: bool) -> list[str]:
+def _post_lines(rows: list[tuple[dict, float | None, list[Job]]], with_day: bool) -> list[str]:
+    """One line per JOB (a post can list many); a post Leapvoy didn't read as a job gets one line saying why."""
     th = get_settings().match_threshold
     out = []
-    for p, low in rows:
+    for p, low, jobs in rows:
         when = (f"{p['posted_at'].astimezone(report.IST):%d %b} " if with_day else "") + post_info.ist_time(p)
+        if jobs:
+            for j in jobs:
+                fit = (f"fit {j.fit_score}/100 {post_info.verdict_label(j.verdict)}" if j.fit_score is not None
+                       else "being checked")
+                if j.verdict == "SKIP":
+                    fit += f" (Not a fit: {post_info.why_not(j)})"
+                out.append(f"{when} job #{j.id} {j.role} · {j.company}: {fit} · apply by {j.apply_method}")
+            continue
         extra = (f" (skipped before any fit check: text similarity {low:.3f}, the bar is {th}; not a fit score)"
                  if low is not None else "")
-        jobs = f" · job #{', #'.join(map(str, p['job_ids']))}" if p["job_ids"] else ""
-        out.append(f"{when} {p['title']}: {p['status']}{extra}{jobs}")
+        out.append(f"{when} {p['title']}: {p['status']}{extra}")
     return out
 
 
 async def _posts_result(s, user_id, posts: list[Post], head: str, with_day: bool) -> ToolResult:
     rows = await post_info.describe_all(s, user_id, posts)
     low = {p.id: p.match_score for p in posts if p.skip_reason == "low_match" and p.match_score is not None}
-    lines = _post_lines([(r, low.get(r["id"])) for r in rows], with_day)
-    note = ("(The app shows every one of these as a card. Reply in 1–2 short sentences (e.g. how many posts and the "
-            "best fit) and do NOT list the posts.)")
+    by_post: dict[int, list[Job]] = {}
+    for j in (await s.execute(select(Job).where(Job.user_id == user_id, Job.post_id.in_([p.id for p in posts]))
+                              .order_by(Job.idx))).scalars():
+        by_post.setdefault(j.post_id, []).append(j)
+    cards = sum(len(by_post.get(r["id"], [])) or 1 for r in rows)
+    fits = sum(1 for js in by_post.values() for j in js if j.verdict and j.verdict != "SKIP")
+    lines = _post_lines([(r, low.get(r["id"]), by_post.get(r["id"], [])) for r in rows], with_day)
+    note = (f"({cards} jobs in {len(rows)} posts; {fits} fit the resume. The app shows every job as its own card. "
+            "Talk about JOBS, not posts: reply in 1-2 short sentences (e.g. how many jobs and the best fit) and do NOT "
+            "list them.)")
     return ToolResult("\n".join([head, *lines, note]), {"type": "posts", "post_ids": [r["id"] for r in rows]})
 
 
@@ -198,8 +213,8 @@ async def list_posts(s, user_id, ctx: Context, date: str = "today") -> ToolResul
     posts = (await s.execute(select(Post).where(Post.user_id == user_id, Post.posted_at >= start, Post.posted_at < end)
                              .order_by(Post.posted_at.desc(), Post.tg_message_id.desc()))).scalars().all()
     if not posts:
-        return ToolResult(f"No posts saved for {d:%d %b} yet. Call check_telegram to read Telegram now.")
-    return await _posts_result(s, user_id, list(posts), f"{len(posts)} post(s) on {d:%d %b}, newest first:", False)
+        return ToolResult(f"No jobs saved for {d:%d %b} yet (Telegram not read for that day). Call check_telegram to read it now.")
+    return await _posts_result(s, user_id, list(posts), f"Every job posted on {d:%d %b}, newest first:", False)
 
 
 async def search_posts(s, user_id, ctx: Context, query: str, days: int = 7) -> ToolResult:

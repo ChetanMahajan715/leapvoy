@@ -5,6 +5,7 @@ export const palette = {
   goldDeep: '#B26A00',  // gold text/icons on light backgrounds (readable)
   ink: '#0C0F1A',       // Midnight Ink, brand base
   ink2: '#1B2033',
+  amber: '#F59E0B',     // the logo path's far end (gradient spark → amber)
 };
 
 // Pure white / pure black like ChatGPT (user, 4 Oct): neutral greys only, no blue or purple tint; gold is the one
@@ -20,6 +21,8 @@ export const light = {
   onPrimary: '#0D0D0D',
   primarySoft: '#FFF4DC',
   primaryText: palette.goldDeep,
+  logoPlane: palette.ink, // the logo's paper plane: dark on white screens (the white one needs the dark tile)
+  logoWing: palette.ink2,
   userBubble: '#F0F0F0',
   scrim: 'rgba(0, 0, 0, 0.4)', // behind floating windows
   chart: palette.goldDeep, // chart bars (3:1 on white, checked with the dataviz validator)
@@ -43,6 +46,8 @@ export const dark = {
   onPrimary: '#0D0D0D',
   primarySoft: 'rgba(245, 165, 36, 0.14)',
   primaryText: palette.spark,
+  logoPlane: '#FFFFFF', // as in brand/svg/app-icon.svg
+  logoWing: '#D9DCE8',
   userBubble: '#262626',
   scrim: 'rgba(0, 0, 0, 0.7)',
   chart: palette.gold, // chart bars (3:1 on the dark surface)

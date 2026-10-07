@@ -100,7 +100,8 @@ export default function Jobs() {
 
   const all = q.data ?? [];
   const posts = pq.data ?? [];
-  const jobCount = posts.reduce((n, p) => n + p.jobs.length, 0);
+  // a post Leapvoy didn't read as a job (e.g. a weak match) still shows as one card, so it counts as one
+  const cards = posts.flatMap((p) => (p.jobs.length ? p.jobs.map((j) => j.apply_method) : [postMethod(p)]));
   const waiting = posts.filter((p) => p.kind === 'pending').length;
   const resumes = useQuery({
     queryKey: ['resumes'],
@@ -109,12 +110,20 @@ export default function Jobs() {
   const primary = resumes.data?.find((r) => r.is_active)?.name;
   useAutoCheck(day, posts.some((p) => p.kind === 'pending')); // Recommended fills in by itself too
   // Both tabs share the Email / Link filter, the model picker and selection
+  // Both tabs count and filter jobs (one post can hold many), never posts
   const count = (k: Kind) =>
     view === 'posts'
-      ? k === 'all' ? posts.length : posts.filter((p) => postMethod(p) === k).length
+      ? k === 'all' ? cards.length : cards.filter((m) => m === k).length
       : k === 'all' ? all.length : all.filter((j) => j.apply_method === k).length;
   const shown = kind === 'all' ? all : all.filter((j) => j.apply_method === kind);
-  const shownPosts = kind === 'all' ? posts : posts.filter((p) => postMethod(p) === kind);
+  const shownPosts =
+    kind === 'all'
+      ? posts
+      : posts.flatMap((p) => {
+          if (!p.jobs.length) return postMethod(p) === kind ? [p] : [];
+          const jobs = p.jobs.filter((j) => j.apply_method === kind);
+          return jobs.length ? [{ ...p, jobs }] : [];
+        });
   const shownJobs = view === 'posts' ? shownPosts.flatMap((p) => p.jobs) : shown;
   const switchView = (v: View_) => {
     setPicked([]);
@@ -145,7 +154,7 @@ export default function Jobs() {
                 <CalendarDays size={18} color={colors.primaryText} strokeWidth={2} />
               </View>
               {pq.data && q.data ? (
-                <Text style={[styles.daySub, { color: colors.textMuted }]}>{`${posts.length} posts · ${jobCount} jobs · ${all.length} recommended`}</Text>
+                <Text style={[styles.daySub, { color: colors.textMuted }]}>{`${cards.length} ${cards.length === 1 ? 'job' : 'jobs'} · ${all.length} recommended`}</Text>
               ) : null}
             </View>
           </Pressable>
@@ -170,7 +179,7 @@ export default function Jobs() {
       ) : null}
 
       <Segment
-        options={[['recommended', `Recommended ${all.length}`], ['posts', `All posts ${pq.data?.length ?? ''}`.trim()]]}
+        options={[['recommended', `Recommended ${all.length}`], ['posts', `All jobs ${pq.data ? cards.length : ''}`.trim()]]}
         value={view}
         onChange={switchView}
       />
@@ -183,7 +192,7 @@ export default function Jobs() {
         />
         <ModelPicker kind="email" prefix="Emails:" />
       </View>
-      {view === 'posts' ? <Small>{"Every Telegram post of the day, newest first, with Telegram's time."}</Small> : null}
+      {view === 'posts' ? <Small>{'Every job posted this day, newest first, fit or not.'}</Small> : null}
       <SelectBar jobs={shownJobs} picked={picked} onPick={setPicked} />
 
       <Sheet open={calendar} title="Show jobs from" onClose={() => setCalendar(false)}>
@@ -210,7 +219,7 @@ export default function Jobs() {
       keyOf={(p) => p.id}
       items={shownPosts}
       renderItem={(p) => <PostItem post={p} picked={picked} onToggle={toggle} />}
-      empty={`No Telegram posts saved for ${dayTitle(day, today)}. Tap Fetch to read Telegram now.`}
+      empty={`No jobs posted on ${dayTitle(day, today)} yet. Tap Fetch to read Telegram now.`}
       header={header}
       footer={footer}
     />
@@ -220,7 +229,7 @@ export default function Jobs() {
       items={shown}
       keyOf={(j) => j.id}
       renderItem={(j) => <JobItem job={j} picked={picked} onToggle={toggle} />}
-      empty={`No jobs recommended for your resume on ${dayTitle(day, today)}. See All posts, or tap Fetch to read new posts.`}
+      empty={`No jobs recommended for your resume on ${dayTitle(day, today)}. See All jobs, or tap Fetch to read new posts.`}
       header={header}
       footer={footer}
     />
