@@ -19,7 +19,7 @@ from app.pipeline import retention
 log = structlog.get_logger()
 EVERY = 30  # seconds between send rounds
 REPLIES_EVERY = 20  # rounds (~10 min) between inbox checks
-MAINTENANCE_EVERY = 120  # rounds (~1 hour): delete accounts whose 7 days are over, clean posts older than 30 days
+MAINTENANCE_EVERY = 120  # rounds (~1 hour): delete accounts whose 7 days are over, clean posts older than 90 days
 
 
 async def main() -> None:

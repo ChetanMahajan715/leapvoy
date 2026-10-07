@@ -259,6 +259,8 @@ async def fetch_day(s: AsyncSession, user_id: uuid.UUID, now: datetime, d) -> Fe
         return Fetched(problem="Telegram signed Leapvoy out. Log in to Telegram again (Setup → Channels).")
     try:
         new = await reader.catch_up(client, _sessionmaker(s), user_id)  # from the saved cursor: new posts only
+        if d < now.astimezone(report.IST).date():  # an earlier day: read that day itself (missing or cleaned up)
+            new += await reader.fetch_range(client, _sessionmaker(s), user_id, *report.day_bounds(d))
     finally:
         await client.disconnect()
     f = await check_day(s, user_id, now, d)

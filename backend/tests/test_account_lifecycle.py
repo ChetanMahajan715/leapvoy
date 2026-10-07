@@ -104,16 +104,17 @@ async def test_delete_account_stops_everything_then_restore_or_purge(api, db, sm
         assert await db.scalar(select(func.count()).select_from(table).where(table.user_id == uid)) == 0
 
 
-# --- 30-day cleanup -------------------------------------------------------------------------
+# --- 90-day cleanup -------------------------------------------------------------------------
 
 async def test_old_unused_posts_go_but_applied_ones_and_stats_stay(db, smtp):
     uid, jobs = await setup(db, email="a@x.com", n_jobs=2)  # one post (30 Sep) with 2 jobs
     ch = (await db.get(Post, (await db.get(Job, jobs[0])).post_id)).channel_id
-    old = NOW - timedelta(days=40)
+    old = NOW - timedelta(days=100)
     for i in range(3):  # three old skipped posts
         db.add(Post(user_id=uid, channel_id=ch, tg_message_id=100 + i, text=f"old {i}", posted_at=old, stage="skipped",
-                    skip_reason="low_match"))
-    applied_post = Post(user_id=uid, channel_id=ch, tg_message_id=200, text="old applied", posted_at=old, stage="scored")
+                    skip_reason="low_match", created_at=old))
+    applied_post = Post(user_id=uid, channel_id=ch, tg_message_id=200, text="old applied", posted_at=old, stage="scored",
+                        created_at=old)
     db.add(applied_post)
     await db.flush()
     applied_job = Job(user_id=uid, post_id=applied_post.id, idx=0, company="Kept", role="AI Engineer",
@@ -129,7 +130,7 @@ async def test_old_unused_posts_go_but_applied_ones_and_stats_stay(db, smtp):
 
     removed = await retention.purge_old(db, now)
     assert removed == 3
-    assert await db.scalar(select(func.count()).select_from(Post).where(Post.user_id == uid, Post.posted_at < now - timedelta(days=30))) == 1
+    assert await db.scalar(select(func.count()).select_from(Post).where(Post.user_id == uid, Post.posted_at < now - timedelta(days=90))) == 1
     assert await db.get(Job, applied_job.id) is not None  # what you applied to stays
     assert await db.scalar(select(func.count()).select_from(DayStats).where(DayStats.user_id == uid)) == 1
 
@@ -138,3 +139,15 @@ async def test_old_unused_posts_go_but_applied_ones_and_stats_stay(db, smtp):
     assert [d["posts"] for d in after["days"]] == [d["posts"] for d in before["days"]]
     assert await retention.purge_old(db, now) == 0  # nothing left to do, no double counting
     assert (await compute(db, uid, 90, now=now))["funnel"] == before["funnel"]
+
+
+async def test_an_old_day_fetched_on_purpose_stays_for_a_week(db, smtp):
+    uid, jobs = await setup(db, email="b@x.com", n_jobs=1)
+    ch = (await db.get(Post, (await db.get(Job, jobs[0])).post_id)).channel_id
+    now = NOW + timedelta(days=1)
+    old = NOW - timedelta(days=120)  # 4 months ago, read from Telegram just now (Jobs calendar + Fetch)
+    db.add(Post(user_id=uid, channel_id=ch, tg_message_id=300, text="fetched today", posted_at=old, stage="new",
+                created_at=now - timedelta(hours=1)))
+    await db.commit()
+    assert await retention.purge_old(db, now) == 0
+    assert await retention.purge_old(db, now + timedelta(days=8)) == 1  # a week later the normal rule applies

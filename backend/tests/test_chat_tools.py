@@ -204,6 +204,10 @@ def telegram(monkeypatch):
         seen["fetched"] += 1
         return 3
 
+    async def fake_fetch_range(client, sm, user_id, since, until):
+        seen["range"] = (since, until)
+        return 2
+
     async def fake_next_posts(s, user_id, limit, since=None, until=None):
         seen["ran"] = (limit, since, until)
         return [101, 102, 103]
@@ -215,6 +219,8 @@ def telegram(monkeypatch):
     seen["processed"] = []
     monkeypatch.setattr(tools.reader, "connect", fake_connect)
     monkeypatch.setattr(tools.reader, "catch_up", fake_catch_up)
+    monkeypatch.setattr(tools.reader, "fetch_range", fake_fetch_range)
+    seen["range"] = None
     monkeypatch.setattr(tools.pipeline_store, "next_posts", fake_next_posts)
     monkeypatch.setattr(tools.graph, "run_post", fake_run_post)
     return seen
@@ -293,3 +299,16 @@ async def test_chat_counts_jobs_not_posts(db, smtp):
     r = await run(db, uid, "list_posts", date=NOW.astimezone(report.IST).date().isoformat())
     assert all(f"ML Engineer · {c}" in r.text for c in ("Alpha", "Beta", "Gamma"))
     assert "jobs in" in r.text and "Talk about JOBS" in r.text
+
+
+
+async def test_fetch_reads_an_old_day_itself_but_today_only_new_posts(db, smtp, telegram, master_key):
+    """Jobs calendar + Fetch (or chat) on a day long gone: that day is read from Telegram, not only new posts."""
+    uid, _ = await setup(db)
+    await save_session(db, uid, "+910000000000", "session-string")
+    old = (NOW - timedelta(days=120)).astimezone(report.IST).date()
+    await tools.fetch_day(db, uid, NOW, old)
+    assert telegram["range"] == report.day_bounds(old)
+    telegram["range"] = None
+    await tools.fetch_day(db, uid, NOW, NOW.astimezone(report.IST).date())
+    assert telegram["range"] is None  # today: reading forward from the last saved post is enough

@@ -31,7 +31,7 @@ async def compute(s: AsyncSession, user_id: uuid.UUID, days: int = 7, now: datet
     async def n(q) -> int:
         return (await s.execute(q)).scalar_one()
 
-    # per day from the saved posts; a cleaned-up day (older than 30 days) uses its saved summary instead
+    # per day from the saved posts; a cleaned-up day (older than 90 days) uses its saved summary instead
     per_day = await raw_days(s, user_id, since, until)
     for row in (await s.execute(select(DayStats).where(DayStats.user_id == user_id, DayStats.day >= first,
                                                        DayStats.day <= first + timedelta(days=days - 1)))).scalars():

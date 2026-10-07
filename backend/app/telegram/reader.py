@@ -87,6 +87,29 @@ async def catch_up(
     return total
 
 
+async def fetch_range(client, sm: SessionMaker, user_id: uuid.UUID, since: datetime, until: datetime) -> int:
+    """Save every enabled channel's posts from [since, until) (e.g. one old India day the user opened), whatever the
+    cursor says: catch_up only reads forward. Already-saved posts are skipped; the cursor never moves back."""
+    async with sm() as s:
+        channels = await store.list_channels(s, user_id, enabled_only=True)
+    total = 0
+    for ch in channels:
+        batch: list[IncomingPost] = []
+        try:
+            async for msg in client.iter_messages(ch.tg_chat_id, offset_date=until):  # newest first, before `until`
+                if msg.date < since:
+                    break
+                if post := to_incoming(msg):
+                    batch.append(post)
+        except FloodWaitError as e:  # Telegram asks to slow down: keep what we have, the next Fetch continues
+            log.warning("telegram.flood_wait", chat_id=ch.tg_chat_id, seconds=e.seconds)
+        except Exception:
+            log.exception("telegram.fetch_range_failed", user_id=str(user_id), chat_id=ch.tg_chat_id)
+        for i in range(0, len(batch), BATCH):
+            total += await _save(sm, user_id, ch.id, batch[i:i + BATCH])
+    return total
+
+
 async def handle_new_message(sm: SessionMaker, user_id: uuid.UUID, chat_id: int, msg) -> bool:
     post = to_incoming(msg)
     if post is None:

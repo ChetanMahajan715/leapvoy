@@ -1,5 +1,6 @@
-"""30-day cleanup of old posts. Removed: posts older than 30 India days (and their jobs and drafts) that never led to an
-email. Kept forever: everything you emailed (the job, the email, replies), because the "one email per HR every
+"""90-day cleanup of old posts (was 30; the user chose 90 on 7 Oct). Removed: posts older than 90 India days (and their
+jobs and drafts) that never led to an email. A post saved in the last 7 days is never removed, so an old day the user
+fetched on purpose (Jobs calendar + Fetch, or asking chat about that date) stays long enough to use. Kept forever: everything you emailed (the job, the email, replies), because the "one email per HR every
 30 days" and "never apply twice" rules and your history need it. Before a day is cleaned, its counts are saved in
 day_stats so Stats stay right for long periods."""
 
@@ -14,7 +15,8 @@ from app.db.models import Channel, DayStats, Job, Post, Send
 from app.pipeline import report
 
 log = structlog.get_logger()
-KEEP_DAYS = 30
+KEEP_DAYS = 90
+PROTECT = timedelta(days=7)  # a day fetched on purpose stays at least this long
 FITS = ("TOP PRIORITY", "STRONG MATCH", "APPLY", "MAYBE")
 
 
@@ -64,7 +66,8 @@ async def purge_old(s: AsyncSession, now: datetime) -> int:
             if d not in done:  # a day is summed once, before anything of it is removed
                 s.add(DayStats(user_id=user_id, day=d, **counts))
         emailed = exists().where(Job.post_id == Post.id, Send.job_id == Job.id)
-        result = await s.execute(delete(Post).where(Post.user_id == user_id, Post.posted_at < cutoff, ~emailed))
+        result = await s.execute(delete(Post).where(Post.user_id == user_id, Post.posted_at < cutoff, ~emailed,
+                                                    Post.created_at < now - PROTECT))
         removed += result.rowcount
         await s.commit()
     if removed:

@@ -156,3 +156,32 @@ async def test_live_message_not_saved_for_other_user(sm):
     async with sm() as s:
         other = await store.get_or_create_user(s, "b@x.com")
     assert await reader.handle_new_message(sm, other, -1001, msg(10)) is False
+
+
+
+@requires_db
+async def test_fetch_range_saves_one_old_day_and_keeps_the_cursor(sm):
+    from datetime import timedelta
+
+    uid = await setup_user(sm, chat_ids=(-1001,), enabled=(-1001,))
+    day = NOW - timedelta(days=100)
+    newest_first = [SimpleNamespace(id=900, message="today's post, hr@a.ai", date=NOW),
+                    SimpleNamespace(id=12, message="old day B, hr@b.ai", date=day + timedelta(hours=5)),
+                    SimpleNamespace(id=11, message="old day A, hr@c.ai", date=day + timedelta(hours=1)),
+                    SimpleNamespace(id=10, message="day before, hr@d.ai", date=day - timedelta(hours=2))]
+
+    class Client(FakeClient):  # Telegram: newest first, starting before offset_date
+        async def iter_messages(self, chat_id, offset_date=None, **kw):
+            for m in self.messages:
+                if offset_date is None or m.date < offset_date:
+                    yield m
+
+    async with sm() as s:
+        ch = await store.get_enabled_channel(s, uid, -1001)
+        cursor = ch.last_message_id
+    saved = await reader.fetch_range(Client(newest_first), sm, uid, day, day + timedelta(days=1))
+    assert saved == 2
+    async with sm() as s:
+        texts = sorted((await s.execute(select(Post.text).where(Post.user_id == uid))).scalars())
+        assert texts == ["old day A, hr@c.ai", "old day B, hr@b.ai"]
+        assert (await store.get_enabled_channel(s, uid, -1001)).last_message_id >= cursor  # never moves back
