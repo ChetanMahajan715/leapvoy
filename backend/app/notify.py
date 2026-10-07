@@ -115,7 +115,7 @@ def _messages(rows: list[Notification]) -> list[tuple[str, str, dict, str]]:
 async def push_pending(s: AsyncSession, now: datetime) -> int:
     """Push waiting inbox rows to each user's phones. Quiet hours keep them waiting (security ones go anyway)."""
     rows = (await s.execute(select(Notification).join(User, User.id == Notification.user_id).where(
-        Notification.push == "pending", User.delete_after.is_(None)).order_by(Notification.id).limit(500))).scalars().all()
+        Notification.push == "pending", Notification.hidden.is_(False), User.delete_after.is_(None)).order_by(Notification.id).limit(500))).scalars().all()
     by_user: dict[uuid.UUID, list[Notification]] = {}
     for n in rows:
         by_user.setdefault(n.user_id, []).append(n)

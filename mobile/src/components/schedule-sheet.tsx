@@ -14,7 +14,7 @@ type Quick = 'now' | 'hour' | 'tomorrow';
 const QUICK: Record<Quick, Choice & { icon: typeof Clock; sub: string }> = {
   now: { when: 'now', label: 'now', icon: Send, sub: 'Spaced 3–8 minutes apart' },
   hour: { when: 'in 1 hour', label: 'in 1 hour', icon: Clock, sub: 'From now' },
-  tomorrow: { when: 'tomorrow 10am', label: 'tomorrow at 10 AM', icon: Sunrise, sub: 'A good time for HR inboxes' },
+  tomorrow: { when: 'tomorrow 10am', label: 'tomorrow at 10 AM', icon: Sunrise, sub: 'A good time to land in inboxes' },
 };
 
 export function ScheduleSheet({

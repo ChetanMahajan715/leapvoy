@@ -33,7 +33,9 @@ async def confirm(s: AsyncSession, user_id: uuid.UUID, action_id: int, now: date
     p = action.payload
     try:
         if action.kind == "schedule":
-            send = await outbox.approve(s, user_id, p["job_id"], datetime.fromisoformat(p["when"]), to=p["to"], now=now)
+            # the Confirm card listed any notes (emailed recently...): confirming it is the user's "send anyway"
+            send = await outbox.approve(s, user_id, p["job_id"], datetime.fromisoformat(p["when"]), to=p["to"], now=now,
+                                        confirm=True)
             result = f"Scheduled for {send.send_at.astimezone(IST):%a %d %b, %I:%M %p} IST."
         elif action.kind == "cancel":
             await outbox.cancel(s, user_id, p["send_id"])

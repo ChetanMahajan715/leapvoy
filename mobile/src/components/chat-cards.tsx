@@ -9,6 +9,7 @@ import {
   Link2,
   Mail,
   PenLine,
+  Pencil,
   RefreshCw,
   Send as SendIcon,
   TriangleAlert,
@@ -19,7 +20,8 @@ import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'r
 
 import { Pressy, ShimmerList } from '@/components/motion';
 import { ScheduleSheet, type Choice } from '@/components/schedule-sheet';
-import { api, errorMessage } from '@/lib/api';
+import { Field } from '@/components/ui';
+import { api, confirmNotes, errorMessage } from '@/lib/api';
 import { useMe } from '@/lib/auth';
 import { haptic } from '@/lib/haptics';
 import { writeAndSchedule, type BulkResult, type Progress } from '@/lib/bulk';
@@ -36,7 +38,7 @@ export type Send = {
   subject?: string; reply_snippet?: string | null;
 };
 type Draft = { status: string; subject: string; body: string; to_emails: string[]; issues: string[]; outdated: boolean;
-  outdated_reason?: 'resume' | 'template' | null };
+  outdated_reason?: 'resume' | 'template' | null; edited?: boolean };
 export type Job = {
   id: number; company: string; role: string; location: string | null; work_mode: string; experience: string | null;
   fit_score: number | null; verdict: string | null; flags: string[]; matched_skills: string[]; gaps: string[];
@@ -246,7 +248,7 @@ function PostOnlyCard({ post }: { post: PostInfo }) {
     mutationFn: async () => {
       const read = await api.post<PostInfo>(`/posts/${post.id}/check`, { force: true }, { timeout: 180_000 });
       const job = read.data.jobs.find((j) => j.apply_method === 'email');
-      if (!job) throw new Error('The AI found no job with an HR email in this post. Use the apply link or the post.');
+      if (!job) throw new Error('The AI found no job with an email address in this post. Use the apply link or the post.');
       if (!job.draft) await api.post(`/jobs/${job.id}/draft`, { model: usePicks.getState().email }, { timeout: 180_000 });
     },
     onSuccess: () => refresh(), // on error this card stays, showing why (tapping again won't re-read the post)
@@ -304,7 +306,7 @@ function PostOnlyCard({ post }: { post: PostInfo }) {
   );
 }
 
-function DraftCard({ jobId }: { jobId: number }) {
+export function DraftCard({ jobId }: { jobId: number }) {
   const q = useQuery({ queryKey: ['jobs', 'one', jobId], queryFn: async () => (await api.get<Job>(`/jobs/${jobId}`)).data });
   return q.data ? <JobCard job={q.data} emailOpen /> : <Loading error={q.error} />;
 }
@@ -486,26 +488,51 @@ export function JobCard({
   const [ask, setAsk] = useState<Choice | null>(null);
   const d = job.draft;
   const all = d?.to_emails ?? job.hr_emails;
-  const [chosen, setChosen] = useState<string[]>(all); // which HR addresses get the email (all, together)
+  const [chosen, setChosen] = useState<string[]>(all); // which addresses get the email (all, together)
+  const [notes, setNotes] = useState<string[] | null>(null); // "you emailed this address 3 days ago"…: send anyway?
+  const [editing, setEditing] = useState(false); // pencil icon: the user writes the email themselves
+  const [subject, setSubject] = useState('');
+  const [text, setText] = useState('');
   const write = useMutation({
     mutationFn: () => // the AI writes it (with the "Write emails with" pick): can take a while
       api.post(`/jobs/${job.id}/draft`, { model: usePicks.getState().email }, { timeout: 180_000 }),
     onSuccess: () => refresh().then(() => setOpen('email')),
   });
   const schedule = useMutation({
-    mutationFn: (w: string) => api.post(`/jobs/${job.id}/schedule`, { when: w, to: chosen }),
+    mutationFn: ({ when: w, confirm }: { when: string; confirm?: boolean }) =>
+      api.post(`/jobs/${job.id}/schedule`, { when: w, to: chosen, confirm: !!confirm }),
     onSuccess: () => {
       haptic.sent();
+      setNotes(null);
       return refresh().then(() => setAsk(null));
     },
+    onError: (e) => setNotes(confirmNotes(e)), // warnings, not errors: shown with "Send anyway"
+  });
+  const save = useMutation({
+    mutationFn: () => api.put(`/jobs/${job.id}/draft`, { subject, body: text }),
+    onSuccess: () => refresh().then(() => setEditing(false)),
   });
 
-  const active = job.send && ['scheduled', 'sending', 'sent'].includes(job.send.status);
-  const canSend = d && d.status !== 'needs_review' && !d.outdated && !active && chosen.length > 0;
+  const s = job.send;
+  const waiting = !!s && ['scheduled', 'sending'].includes(s.status); // change it (edit / move), don't queue another
+  const delivered = !!s && ['sent', 'unknown'].includes(s.status);
+  const active = waiting || delivered; // the addresses it went (or goes) to are shown
+  const canSend = d && d.status !== 'needs_review' && !d.outdated && !waiting && chosen.length > 0;
+  // after a test: "Send to company" (test mode off) or "Send test again"; after a real email: "Resend"
+  const sendLabel = s?.status === 'failed' ? 'Try again'
+    : !delivered ? 'Send now'
+    : s?.test_mode ? (testMode ? 'Send test again' : 'Send to company')
+    : 'Resend';
+  const startEdit = () => {
+    if (!d) return;
+    setSubject(d.subject);
+    setText(d.body);
+    setEditing(true);
+  };
   const where = [job.company, job.location, job.work_mode !== 'unknown' ? job.work_mode : null].filter(Boolean).join(' · ');
   const toggleTo = (e: string) => setChosen(chosen.includes(e) ? chosen.filter((x) => x !== e) : [...chosen, e]);
   const flip = (k: 'details' | 'email' | 'post') => setOpen(open === k ? null : k);
-  const error = write.error ?? schedule.error;
+  const error = write.error ?? save.error ?? (notes ? null : schedule.error);
   const link = job.apply_links[0];
   const emailState = !d ? 'Email not written yet' : d.outdated ? (d.outdated_reason === 'template' ? 'Template changed, rewrite it' : 'Old resume, rewrite it') : d.status === 'needs_review' ? 'Email needs review' : 'Email ready';
 
@@ -546,7 +573,7 @@ export function JobCard({
             'Apply',
             job.apply_method === 'email' ? (
               <Text selectable style={[styles.small, { color: colors.text }]}>
-                {(active ? (job.send?.to_emails ?? all) : chosen.length ? chosen : all).join(', ') || 'No HR email'}
+                {(active ? (job.send?.to_emails ?? all) : chosen.length ? chosen : all).join(', ') || 'No email address'}
                 {!active ? (
                   <Text style={{ color: d && !d.outdated && d.status !== 'needs_review' ? colors.success : colors.textMuted }}>{` · ${emailState}`}</Text>
                 ) : null}
@@ -593,7 +620,7 @@ export function JobCard({
               </View>
             </Section>
           ) : null}
-          {job.apply_method === 'email' && all.length > 1 && !active ? (
+          {job.apply_method === 'email' && all.length > 1 && !waiting ? (
             <Section title="SEND TO (ONE EMAIL TO ALL TICKED)">
               {all.map((e) => (
                 <Pressable
@@ -618,10 +645,39 @@ export function JobCard({
       ) : null}
       {open === 'email' && d ? (
         <View style={[styles.panel, { backgroundColor: colors.background, borderColor: colors.border }]}>
-          <PanelHead icon={Mail} title="Email" onClose={() => setOpen(null)} />
-          <Small>To: {(active ? d.to_emails : chosen).join(', ')}</Small>
-          <Text selectable style={[styles.subject, { color: colors.text }]}>{d.subject}</Text>
-          <Text selectable style={[styles.body, { color: colors.text }]}>{d.body}</Text>
+          <PanelHead icon={Mail} title="Email" onClose={() => { setEditing(false); setOpen(null); }} />
+          {editing ? (
+            <View style={{ gap: spacing.sm }}>
+              <Field label="Subject" value={subject} onChangeText={setSubject} />
+              <Field label="Email" value={text} onChangeText={setText} multiline textAlignVertical="top"
+                style={{ minHeight: 220 }} />
+              <View style={styles.row}>
+                <Pill label="Save" primary busy={save.isPending} onPress={() => save.mutate()} />
+                <Pill label="Cancel" onPress={() => setEditing(false)} />
+              </View>
+              <Small>{waiting ? 'The scheduled email goes out with your version, at the same time.' : 'Your version is the one that gets sent for this job.'}</Small>
+            </View>
+          ) : (
+            <>
+              <View style={styles.titleRow}>
+                <Small>To: {(s && active ? (s.to_emails ?? [s.to_email]) : chosen).join(', ')}</Small>
+                {s?.status !== 'sending' ? (
+                  <Pressable accessibilityRole="button" accessibilityLabel="Edit this email" onPress={startEdit} hitSlop={8}
+                    style={styles.close}>
+                    <Pencil size={16} color={colors.primaryText} strokeWidth={2} />
+                  </Pressable>
+                ) : null}
+              </View>
+              {d.edited ? <Small color={colors.primaryText}>Edited by you</Small> : null}
+              <Text selectable style={[styles.subject, { color: colors.text }]}>{d.subject}</Text>
+              <Text selectable style={[styles.body, { color: colors.text }]}>{d.body}</Text>
+              {s?.status !== 'sending' ? (
+                <View style={styles.row}>
+                  <Pill label="Rewrite email" icon={PenLine} busy={write.isPending} onPress={() => write.mutate()} />
+                </View>
+              ) : null}
+            </>
+          )}
         </View>
       ) : null}
       {open === 'post' && job.post_text ? (
@@ -631,7 +687,18 @@ export function JobCard({
         </View>
       ) : null}
 
-      {ask ? (
+      {ask && notes ? (
+        <View style={[styles.ask, { backgroundColor: colors.warningSoft }]}>
+          {notes.map((n) => (
+            <Meta key={n} icon={TriangleAlert} color={colors.text}>{n}</Meta>
+          ))}
+          <Text style={[styles.body, { color: colors.text }]}>{`Send to ${chosen.join(', ')} ${ask.label} anyway?`}</Text>
+          <View style={styles.row}>
+            <Pill label="Send anyway" primary busy={schedule.isPending} onPress={() => schedule.mutate({ when: ask.when, confirm: true })} />
+            <Pill label="Cancel" onPress={() => { setNotes(null); setAsk(null); }} />
+          </View>
+        </View>
+      ) : ask ? (
         <View style={[styles.ask, { backgroundColor: colors.primarySoft }]}>
           <Text style={[styles.body, { color: colors.text }]}>
             {testMode
@@ -639,7 +706,7 @@ export function JobCard({
               : `Send one email to ${chosen.join(', ')} ${ask.label}? Nothing goes out until you confirm.`}
           </Text>
           <View style={styles.row}>
-            <Pill label="Confirm" primary busy={schedule.isPending} onPress={() => schedule.mutate(ask.when)} />
+            <Pill label="Confirm" primary busy={schedule.isPending} onPress={() => schedule.mutate({ when: ask.when })} />
             <Pill label="Cancel" onPress={() => setAsk(null)} />
           </View>
         </View>
@@ -649,12 +716,12 @@ export function JobCard({
             {job.apply_method === 'link' && link ? (
               <Pill label="Open apply link" icon={ExternalLink} primary onPress={() => Linking.openURL(link)} />
             ) : null}
-            {job.apply_method === 'email' && (!d || d.outdated || d.status === 'needs_review') && !active ? (
+            {job.apply_method === 'email' && (!d || d.outdated || d.status === 'needs_review') && !waiting ? (
               <Pill label={d ? 'Rewrite email' : 'Write email'} icon={PenLine} primary busy={write.isPending} onPress={() => write.mutate()} />
             ) : null}
             {canSend ? (
               <>
-                <Pill label="Send now" icon={SendIcon} primary onPress={() => setAsk({ when: 'now', label: 'now' })} />
+                <Pill label={sendLabel} icon={SendIcon} primary onPress={() => setAsk({ when: 'now', label: 'now' })} />
                 <Pill label="Schedule" icon={Clock} onPress={() => setScheduling(true)} />
               </>
             ) : null}
@@ -729,7 +796,7 @@ export function BulkBar({ jobs, onDone, inline }: { jobs: Job[]; onDone: () => v
           <View style={{ gap: spacing.sm }}>
             <Small color={colors.text}>
               {toWrite ? `Write ${toWrite} email${toWrite > 1 ? 's' : ''} with ${modelName}, then send` : 'Send'} {n} email
-              {n > 1 ? 's' : ''} to each job&apos;s HR addresses {plan.label}, 3–8 min apart (your daily limit; extra ones move
+              {n > 1 ? 's' : ''} to each job&apos;s email addresses {plan.label}, 3–8 min apart (your daily limit; extra ones move
               to the next morning).{testMode ? ' Test mode: they all go to your own inbox.' : ''}
             </Small>
             <View style={styles.row}>

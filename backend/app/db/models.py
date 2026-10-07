@@ -89,6 +89,7 @@ class Notification(Base):
     data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
     push: Mapped[str] = mapped_column(String(10), default="pending", server_default="pending")
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    hidden: Mapped[bool] = mapped_column(default=False, server_default="false")  # deleted by the user
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -245,6 +246,7 @@ class Draft(Base):
     to_emails: Mapped[list[str]] = _texts()
     subject: Mapped[str] = mapped_column(Text)
     body: Mapped[str] = mapped_column(Text)
+    edited: Mapped[bool] = mapped_column(default=False, server_default="false")  # the user's own words: sent as-is
     issues: Mapped[list[str]] = _texts()  # checks that still fail after rewrites (unsupported skills, length)
     status: Mapped[str] = mapped_column(String(16), default="draft", server_default="draft")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -332,6 +334,7 @@ class Send(Base):
     attempts: Mapped[int] = mapped_column(default=0, server_default="0")
     error: Mapped[str | None] = mapped_column(Text)
     message_id: Mapped[str | None] = mapped_column(Text)
+    hidden: Mapped[bool] = mapped_column(default=False, server_default="false")  # deleted from the lists (still counts)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     replied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reply_snippet: Mapped[str | None] = mapped_column(Text)

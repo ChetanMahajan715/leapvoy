@@ -15,7 +15,7 @@ const native = Platform.OS === 'android';
 // Android categories: the user can mute any of them in the phone's own settings too (ids match the server's channelId)
 const CHANNELS: [string, string][] = [
   ['jobs', 'New jobs'],
-  ['replies', 'HR replies'],
+  ['replies', 'Replies to your emails'],
   ['sending', 'Sending'],
   ['account', 'Account and security'],
 ];

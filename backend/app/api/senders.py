@@ -155,6 +155,6 @@ async def save_sending(body: SendingIn, user: User = Depends(current_user), s: A
         if await senders.default_sender(s, user.id) is None:
             raise HTTPException(400, "Connect an email account first. Real emails need one to send from.")
         if not body.confirm:
-            raise HTTPException(400, "Turning test mode off sends real emails to HR. Please confirm it first.")
+            raise HTTPException(400, "Turning test mode off sends real emails to the addresses in the job posts. Please confirm it first.")
     await outbox.set_test_mode(s, user.id, body.test_mode)
     return await _sending(s, user.id)

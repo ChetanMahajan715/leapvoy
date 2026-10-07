@@ -29,10 +29,10 @@ async def push_token(body: TokenIn, me: tuple[User, Device] = Depends(current), 
 
 @router.get("/notifications")
 async def inbox(limit: int = 50, user: User = Depends(current_user), s: AsyncSession = Depends(get_db)):
-    rows = (await s.execute(select(Notification).where(Notification.user_id == user.id)
+    mine = (Notification.user_id == user.id, Notification.hidden.is_(False))
+    rows = (await s.execute(select(Notification).where(*mine)
                             .order_by(Notification.id.desc()).limit(min(max(limit, 1), 200)))).scalars().all()
-    unread = await s.scalar(select(func.count()).select_from(Notification).where(
-        Notification.user_id == user.id, Notification.read_at.is_(None)))
+    unread = await s.scalar(select(func.count()).select_from(Notification).where(*mine, Notification.read_at.is_(None)))
     return {"unread": unread, "items": [
         {"id": n.id, "kind": n.kind, "title": n.title, "body": n.body, "data": n.data,
          "read": n.read_at is not None, "created_at": n.created_at.isoformat()} for n in rows]}
@@ -48,6 +48,17 @@ async def mark_read(body: ReadIn, user: User = Depends(current_user), s: AsyncSe
     if body.ids is not None:
         q = q.where(Notification.id.in_(body.ids))
     await s.execute(q.values(read_at=datetime.now(UTC)))
+    await s.commit()
+    return {"ok": True}
+
+
+@router.post("/notifications/delete")
+async def delete(body: ReadIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_db)):
+    """ids=None: Clear all. Hidden, not removed, so a deleted job alert never comes back as new after a re-check."""
+    q = update(Notification).where(Notification.user_id == user.id, Notification.hidden.is_(False))
+    if body.ids is not None:
+        q = q.where(Notification.id.in_(body.ids))
+    await s.execute(q.values(hidden=True, read_at=func.coalesce(Notification.read_at, datetime.now(UTC)), push="none"))
     await s.commit()
     return {"ok": True}
 

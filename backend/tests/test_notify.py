@@ -182,3 +182,16 @@ async def test_morning_summary_once_a_day(db, smtp, expo):
     assert await notify.morning_summary(db, NOW + timedelta(hours=2)) == 0
     [s] = await rows(db, uid, "summary")
     assert s.title.startswith("Yesterday: 1 posts")
+
+
+async def test_deleted_notifications_leave_the_inbox_and_never_buzz(db, smtp, expo):
+    uid, _ = await setup(db, n_jobs=2)
+    await phone(db, uid)
+    await scored_jobs(db, uid, ["TOP PRIORITY", "STRONG MATCH"])
+    first, second = await rows(db, uid, "job")
+    first.hidden = True  # deleted (its push still pending): the filter alone must keep it quiet
+    await db.commit()
+    await notify.push_pending(db, NOW)
+    await db.refresh(first)
+    await db.refresh(second)
+    assert (first.push, second.push) == ("pending", "sent")  # the deleted one never reaches the phone

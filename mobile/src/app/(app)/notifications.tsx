@@ -2,7 +2,7 @@
  * right screen. The gear opens what to be notified about: each kind, the minimum fit, quiet hours. */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { Settings2 } from 'lucide-react-native';
+import { Settings2, X } from 'lucide-react-native';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 
@@ -19,7 +19,7 @@ type Prefs = { off: string[]; min_fit: string; quiet_from: number; quiet_to: num
 const KINDS: [string, string][] = [
   ['job', 'New jobs that fit you'],
   ['summary', 'Morning summary (after 9 AM)'],
-  ['reply', 'HR replies'],
+  ['reply', 'Replies to your emails'],
   ['send_failed', "An email couldn't be sent"],
   ['limit', 'Daily sending limit reached'],
   ['ai_paused', 'Free AI used up for the day'],
@@ -37,7 +37,7 @@ function when(iso: string): string {
   });
 }
 
-function Row({ note, onOpen }: { note: Note; onOpen: () => void }) {
+function Row({ note, onOpen, onDelete }: { note: Note; onOpen: () => void; onDelete: () => void }) {
   const { colors } = useColors();
   return (
     <Pressable
@@ -53,6 +53,7 @@ function Row({ note, onOpen }: { note: Note; onOpen: () => void }) {
         {note.body ? <Text style={[styles.body, { color: colors.textMuted }]}>{note.body}</Text> : null}
         <Text style={[styles.time, { color: colors.textMuted }]}>{when(note.created_at)}</Text>
       </View>
+      <IconButton icon={X} label="Delete this notification" onPress={onDelete} />
     </Pressable>
   );
 }
@@ -121,6 +122,14 @@ export default function Notifications() {
   const inbox = useInbox();
   const [choices, setChoices] = useState(false);
   const readAll = useMutation({ mutationFn: () => markRead(), onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }) });
+  const [clearing, setClearing] = useState(false);
+  const remove = useMutation({ // ids undefined = Clear all
+    mutationFn: (ids?: number[]) => api.post('/notifications/delete', { ids: ids ?? null }),
+    onSuccess: () => {
+      setClearing(false);
+      return qc.invalidateQueries({ queryKey: ['notifications'] });
+    },
+  });
   const open = async (n: Note) => {
     if (!n.read) markRead([n.id]).then(() => qc.invalidateQueries({ queryKey: ['notifications'] }));
     const target = noteTarget(n.data);
@@ -136,13 +145,25 @@ export default function Notifications() {
         right={<IconButton icon={Settings2} label="Choose notifications" onPress={() => setChoices(true)} />}
       />
       {unread ? <Button kind="secondary" title="Mark all as read" busy={readAll.isPending} onPress={() => readAll.mutate()} /> : null}
+      {items.length ? (
+        clearing ? (
+          <Card>
+            <T>Delete all {items.length} notifications?</T>
+            <Button kind="danger" title="Delete all" busy={remove.isPending} onPress={() => remove.mutate(undefined)} />
+            <Button kind="secondary" title="Keep them" onPress={() => setClearing(false)} />
+          </Card>
+        ) : (
+          <Button kind="secondary" title="Clear all" onPress={() => setClearing(true)} />
+        )
+      ) : null}
+      {remove.error ? <T variant="error">{errorMessage(remove.error)}</T> : null}
       <Card>
         {inbox.isError && !inbox.data ? <T variant="error">{errorMessage(inbox.error)}</T> : null}
         {inbox.data && !items.length ? (
-          <T variant="muted">Nothing yet. New jobs that fit you, HR replies and sending problems show up here.</T>
+          <T variant="muted">Nothing yet. New jobs that fit you, replies and sending problems show up here.</T>
         ) : null}
         {items.map((n) => (
-          <Row key={n.id} note={n} onOpen={() => open(n)} />
+          <Row key={n.id} note={n} onOpen={() => open(n)} onDelete={() => remove.mutate([n.id])} />
         ))}
       </Card>
       <Sheet open={choices} title="Notify me about" onClose={() => setChoices(false)}>

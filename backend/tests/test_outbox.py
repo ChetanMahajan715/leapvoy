@@ -131,12 +131,15 @@ async def test_cannot_approve_another_users_job(db, smtp):
 
 # --- safety rules (live mode) ----------------------------------------------------
 
-async def test_same_hr_only_once_in_30_days(db, smtp):
+async def test_same_address_within_30_days_asks_and_the_user_decides(db, smtp):
     uid, [a, b] = await setup(db, n_jobs=2, hr="hr@same.com")
     await go_live(db, uid)
     await outbox.approve(db, uid, a, NOW, now=NOW)
-    with pytest.raises(outbox.NotAllowed, match="30 days"):
+    with pytest.raises(outbox.NeedsConfirm) as e:
         await outbox.approve(db, uid, b, NOW, now=NOW)
+    assert any("hr@same.com" in w for w in e.value.warnings)
+    second = await outbox.approve(db, uid, b, NOW, now=NOW, confirm=True)  # "Send anyway"
+    assert second.status == "scheduled"
 
 
 async def test_same_company_and_role_only_once(db, smtp):
@@ -268,7 +271,7 @@ async def test_you_can_leave_one_address_out(db, smtp):
     await two_hr_job(db, uid, job)
     s = await outbox.approve(db, uid, job, NOW, to=["TALENT@acme.com"], now=NOW)
     assert s.to_emails == ["talent@acme.com"]
-    with pytest.raises(outbox.NotAllowed, match="not an HR address"):
+    with pytest.raises(outbox.NotAllowed, match="not an address from this job"):
         await outbox.approve(db, uid, job, NOW, to=["someone@else.com"], now=NOW)
 
 
@@ -326,3 +329,53 @@ async def test_emails_that_became_due_while_offline_are_spaced_out_again(db, smt
     assert len(sent_at) == 4 and sent_at[0] == back
     gaps = [(b - a).total_seconds() for a, b in zip(sent_at, sent_at[1:], strict=False)]
     assert all(g >= outbox.GAP_MIN for g in gaps), gaps
+
+
+async def test_after_a_test_email_the_real_send_and_more_tests_are_allowed(db, smtp):
+    uid, [job] = await setup(db)  # test mode is on by default
+    t1 = await outbox.approve(db, uid, job, NOW, now=NOW)
+    await outbox.deliver(db, t1.id, now=NOW)
+    t2 = await outbox.approve(db, uid, job, NOW, now=NOW)  # "Send test again": tests only reach the user's inbox
+    assert t2.id != t1.id and t2.test_mode
+    await outbox.deliver(db, t2.id, now=NOW + timedelta(minutes=10))
+    await go_live(db, uid)
+    real = await outbox.approve(db, uid, job, NOW, now=NOW)  # "Send to company": no warning, tests don't count
+    assert not real.test_mode and real.send_key.endswith(":live")
+
+
+async def test_resend_after_sent_needs_confirm_and_gets_its_own_key(db, smtp):
+    uid, [job] = await setup(db)
+    await go_live(db, uid)
+    first = await outbox.approve(db, uid, job, NOW, now=NOW)
+    assert await outbox.deliver(db, first.id, now=NOW) == "sent"
+    with pytest.raises(outbox.NeedsConfirm) as e:
+        await outbox.approve(db, uid, job, NOW, now=NOW + timedelta(hours=1))
+    assert "already sent" in e.value.warnings[0]
+    again = await outbox.approve(db, uid, job, NOW, now=NOW + timedelta(hours=1), confirm=True)
+    assert again.id != first.id and again.send_key != first.send_key
+    assert await outbox.deliver(db, again.id, now=NOW + timedelta(hours=2)) == "sent"  # not cancelled at send time
+
+
+async def test_a_waiting_email_cannot_be_queued_twice(db, smtp):
+    uid, [job] = await setup(db)
+    await outbox.approve(db, uid, job, NOW + timedelta(days=1), now=NOW)
+    with pytest.raises(outbox.NotAllowed, match="already scheduled"):
+        await outbox.approve(db, uid, job, NOW, now=NOW, confirm=True)
+
+
+async def test_edit_reaches_the_scheduled_copy_and_delete_hides(db, smtp):
+    from app.mailer import drafts as dr
+
+    uid, [job] = await setup(db)
+    send = await outbox.approve(db, uid, job, NOW + timedelta(days=1), now=NOW)
+    await dr.edit_draft(db, uid, job, "My own subject", "Dear team,\n\nMy own words.")
+    assert await outbox.refresh_waiting(db, uid, job)
+    await db.refresh(send)
+    assert send.subject == "[TEST] My own subject" and send.body.endswith("My own words.")
+    draft = (await db.execute(select(Draft).where(Draft.job_id == job))).scalar_one()
+    assert draft.edited and not await dr.is_outdated(db, draft)
+    with pytest.raises(ValueError):
+        await dr.edit_draft(db, uid, job, "  ", "x")
+    await outbox.hide(db, uid, send.id)
+    await db.refresh(send)
+    assert (send.status, send.hidden) == ("cancelled", True)

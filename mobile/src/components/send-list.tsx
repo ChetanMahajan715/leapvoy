@@ -73,7 +73,7 @@ export function SendList({
             accessibilityLabel="Search emails"
             value={text}
             onChangeText={setText}
-            placeholder="Search company, role, subject or HR email"
+            placeholder="Search company, role, subject or email"
             placeholderTextColor={colors.textMuted}
             autoCapitalize="none"
             autoCorrect={false}

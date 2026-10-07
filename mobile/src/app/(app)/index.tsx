@@ -223,7 +223,7 @@ export default function Chat() {
             </View>
           </View>
           <Text style={[styles.note, { color: attachError ? colors.error : colors.textMuted }]}>
-            {attachError ?? (reading ? 'Reading the file…' : 'Nothing is sent to HR without your approval.')}
+            {attachError ?? (reading ? 'Reading the file…' : 'Nothing is sent to anyone without your approval.')}
           </Text>
         </View>
       </AvoidKeyboard>

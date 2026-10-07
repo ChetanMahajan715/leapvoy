@@ -3,7 +3,7 @@ import { Clock, Mail, X } from 'lucide-react-native';
 import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { Pill, Small, useRefresh, when, type Send } from '@/components/chat-cards';
+import { DraftCard, Pill, Small, useRefresh, when, type Send } from '@/components/chat-cards';
 import { ScheduleSheet } from '@/components/schedule-sheet';
 import { SendList } from '@/components/send-list';
 import { api, errorMessage } from '@/lib/api';
@@ -29,7 +29,9 @@ function ScheduledRow({ send }: { send: Send }) {
   const refresh = useRefresh();
   const [moving, setMoving] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const cancel = useMutation({ mutationFn: () => api.post(`/sends/${send.id}/cancel`), onSuccess: refresh });
+  const [editing, setEditing] = useState(false);
+  // Delete = cancel it and take it off the list
+  const cancel = useMutation({ mutationFn: () => api.delete(`/sends/${send.id}`), onSuccess: refresh });
   const move = useMutation({
     mutationFn: (w: string) => api.post(`/sends/${send.id}/reschedule`, { when: w }),
     onSuccess: refresh,
@@ -66,18 +68,20 @@ function ScheduledRow({ send }: { send: Send }) {
 
       {cancelling ? (
         <View style={[styles.ask, { backgroundColor: colors.primarySoft }]}>
-          <Small color={colors.text}>Cancel this email? It won’t be sent.</Small>
+          <Small color={colors.text}>Delete this email? It won’t be sent.</Small>
           <View style={styles.row}>
-            <Pill label="Yes, cancel it" primary busy={cancel.isPending} onPress={() => cancel.mutate()} />
+            <Pill label="Yes, delete it" primary busy={cancel.isPending} onPress={() => cancel.mutate()} />
             <Pill label="Keep it" onPress={() => setCancelling(false)} />
           </View>
         </View>
       ) : (
         <View style={[styles.actions, { borderTopColor: colors.border }]}>
+          <Pill label={editing ? 'Close email' : 'Edit email'} icon={Mail} onPress={() => setEditing(!editing)} />
           <Pill label="Move" icon={Clock} busy={move.isPending} onPress={() => setMoving(true)} />
-          <Pill label="Cancel email" icon={X} onPress={() => setCancelling(true)} />
+          <Pill label="Delete" icon={X} onPress={() => setCancelling(true)} />
         </View>
       )}
+      {editing ? <DraftCard jobId={send.job_id} /> : null}
       {error ? <Small color={colors.error}>{errorMessage(error)}</Small> : null}
       <ScheduleSheet
         open={moving}

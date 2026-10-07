@@ -24,6 +24,7 @@ from app.mailer.guard import unsupported_claims
 from app.mailer.render import MAX_WORDS, MIN_WORDS, default_template, render, word_count
 from app.mailer.rules import hr_first_name, location_phrase, subject_parts
 from app.pipeline.resume import active_resume
+from app.pipeline.sections import excerpt
 
 MAX_ATTEMPTS = 3
 TEMPLATE_NAME = "default-v1"
@@ -111,6 +112,9 @@ async def write_draft(s: AsyncSession, user_id: uuid.UUID, job_id: int, model: s
         raise ProfileIncomplete(missing)
 
     override, extras = subject_parts(job, profile, post.text)
+    names = [(c, r) for c, r in (await s.execute(
+        select(Job.company, Job.role).where(Job.post_id == post.id).order_by(Job.idx))).all()]
+    own = excerpt(post.text, names, job.idx, job.hr_emails, job.apply_links)  # this job's part of a multi-job post
     fixed = {"role": job.role, "company": job.company, "hr_first_name": hr_first_name(job.hr_name),
              "subject_override": override, "subject_extras": extras, "profile": profile}
     facts = {
@@ -123,7 +127,7 @@ async def write_draft(s: AsyncSession, user_id: uuid.UUID, job_id: int, model: s
     }
     messages = [
         {"role": "system", "content": prompts.load("email").format(examples=style_examples(resume.text), resume=resume.text)},
-        {"role": "user", "content": f"{json.dumps(facts, ensure_ascii=False)}\n\nOriginal job post:\n{post.text}"},
+        {"role": "user", "content": f"{json.dumps(facts, ensure_ascii=False)}\n\nOriginal job post:\n{own}"},
     ]
     tpl = await templates.active(s, user_id)
     bounds = word_bounds(tpl.jinja, fixed)
@@ -141,9 +145,24 @@ async def write_draft(s: AsyncSession, user_id: uuid.UUID, job_id: int, model: s
         user_id=user_id, job_id=job.id
     )
     draft.resume_id, draft.template_name, draft.to_emails = resume.id, tpl.name, list(job.hr_emails)
-    draft.subject, draft.body, draft.issues = subject, body, problems
+    draft.subject, draft.body, draft.issues, draft.edited = subject, body, problems, False
     draft.status = "needs_review" if problems else "draft"
     s.add(draft)
+    await s.commit()
+    return draft
+
+
+async def edit_draft(s: AsyncSession, user_id: uuid.UUID, job_id: int, subject: str, body: str) -> Draft:
+    """The user's own version (pencil icon): sent exactly as written. Only an empty subject or body is refused."""
+    draft = (await s.execute(select(Draft).where(Draft.job_id == job_id, Draft.user_id == user_id))).scalar_one_or_none()
+    if draft is None:
+        raise JobNotFound(job_id)
+    subject, body = " ".join(subject.split()), body.strip()
+    if not subject or not body:
+        raise ValueError("The subject and the email text can't be empty.")
+    draft.subject, draft.body, draft.issues, draft.edited = subject, body, [], True
+    if draft.status == "needs_review":
+        draft.status = "draft"
     await s.commit()
     return draft
 
@@ -158,7 +177,10 @@ def word_bounds(jinja: str, fixed: dict) -> tuple[int, int]:
 
 
 async def outdated_reason(s: AsyncSession, draft: Draft) -> str | None:
-    """'resume' / 'template' when the draft was written with an older one (then it must be rewritten), else None."""
+    """'resume' / 'template' when the draft was written with an older one (then it must be rewritten), else None.
+    An email the user edited by hand is theirs: never called outdated."""
+    if draft.edited:
+        return None
     active = await active_resume(s, draft.user_id)
     if active is None or active.id != draft.resume_id:
         return "resume"

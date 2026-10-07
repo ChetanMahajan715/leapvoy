@@ -24,9 +24,15 @@ class DraftIn(BaseModel):
     model: str | None = None  # "Write emails with" picker; None = Auto
 
 
+class DraftEdit(BaseModel):  # the pencil icon: the user's own words, sent as written
+    subject: str = Field(max_length=300)
+    body: str = Field(max_length=20_000)
+
+
 class When(BaseModel):
     when: str = Field("now", max_length=60)
-    to: list[str] | str | None = None  # which HR addresses (default: all of the post's, in one email)
+    to: list[str] | str | None = None  # which addresses (default: all of the post's, in one email)
+    confirm: bool = False  # the user saw the warnings (recently emailed, already sent...) and sends anyway
 
 
 def send_json(send: Send, job: Job | None = None) -> dict:
@@ -59,6 +65,7 @@ async def job_json(s: AsyncSession, job: Job) -> dict:
         "posted_at": post.posted_at if post else None,
         "draft": None if draft is None else {
             "status": draft.status, "subject": draft.subject, "body": draft.body, "to_emails": draft.to_emails,
+            "edited": draft.edited,
             "issues": draft.issues, "outdated": (why := await drafts.outdated_reason(s, draft)) is not None,
             "outdated_reason": why,
         },
@@ -200,15 +207,32 @@ async def write_draft(job_id: int, body: DraftIn | None = None, user: User = Dep
         raise HTTPException(400, "Add a resume first.") from None
     except drafts.ProfileIncomplete as e:
         raise HTTPException(400, f"Your profile is missing your {', '.join(e.missing)}. Add it, then try again.") from None
+    await outbox.refresh_waiting(s, user.id, job.id)  # a scheduled copy goes out with the new text, same time
+    return await job_json(s, job)
+
+
+@router.put("/jobs/{job_id}/draft")
+async def edit_draft(job_id: int, body: DraftEdit, user: User = Depends(current_user), s: AsyncSession = Depends(get_db)):
+    job = await _own_job(s, user.id, job_id)
+    try:
+        await drafts.edit_draft(s, user.id, job.id, body.subject, body.body)
+    except drafts.JobNotFound:
+        raise HTTPException(404, "Write the email first.") from None
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    await outbox.refresh_waiting(s, user.id, job.id)
     return await job_json(s, job)
 
 
 @router.post("/jobs/{job_id}/schedule")
 async def schedule(job_id: int, body: When, user: User = Depends(current_user), s: AsyncSession = Depends(get_db)):
-    """Card button (the app asks the user to confirm before calling this)."""
+    """Card button (the app asks the user to confirm before calling this). 409 {"confirm": [reasons]}: tell the user
+    why it may not be wise (e.g. address emailed 3 days ago) and call again with confirm=true if they still want it."""
     job = await _own_job(s, user.id, job_id)
     try:
-        send = await outbox.approve(s, user.id, job.id, parse_when(body.when), to=body.to)
+        send = await outbox.approve(s, user.id, job.id, parse_when(body.when), to=body.to, confirm=body.confirm)
+    except outbox.NeedsConfirm as e:
+        raise HTTPException(409, {"confirm": e.warnings}) from None
     except (outbox.NotAllowed, ValueError) as e:
         raise HTTPException(400, str(e)) from None
     return send_json(send, job)
@@ -219,7 +243,7 @@ async def list_sends(status: str | None = None, q: str | None = None, user: User
                      s: AsyncSession = Depends(get_db)):
     """?status= filter; ?q= search (company, role, subject, HR addresses; every word must match) over all history."""
     text = q
-    q = select(Send, Job).join(Job, Send.job_id == Job.id).where(Send.user_id == user.id)
+    q = select(Send, Job).join(Job, Send.job_id == Job.id).where(Send.user_id == user.id, Send.hidden.is_(False))
     if status:
         q = q.where(Send.status == status)
     haystack = func.concat_ws(" ", Job.company, Job.role, Send.subject, func.array_to_string(Send.to_emails, " "))
@@ -244,6 +268,16 @@ async def cancel_send(send_id: int, user: User = Depends(current_user), s: Async
     except outbox.NotAllowed as e:
         raise HTTPException(400, str(e)) from None
     return send_json(send)
+
+
+@router.delete("/sends/{send_id}")
+async def delete_send(send_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_db)):
+    """Remove from Scheduled / Sent (a waiting email is cancelled). It can't recall an email already delivered."""
+    try:
+        await outbox.hide(s, user.id, send_id)
+    except outbox.NotAllowed as e:
+        raise HTTPException(400, str(e)) from None
+    return {"ok": True}
 
 
 @router.post("/sends/{send_id}/reschedule")

@@ -165,7 +165,7 @@ async def analyze_pasted_job(s, user_id, ctx: Context) -> ToolResult:
         return ToolResult("The free AI is busy right now. Paste the job again in a minute.")
     jobs = (await s.execute(select(Job).where(Job.post_id == post.id).order_by(Job.idx))).scalars().all()
     if not jobs:
-        return ToolResult("I couldn't find a job with an HR email or apply link in that text.")
+        return ToolResult("I couldn't find a job with an email address or apply link in that text.")
     return ToolResult("\n".join([f"{len(jobs)} job(s) from the pasted post:", *await _job_lines(s, list(jobs))]),
                       {"type": "jobs", "date": ctx.now.astimezone(report.IST).date().isoformat(),
                        "job_ids": [j.id for j in jobs]})
@@ -337,7 +337,12 @@ async def schedule_email(s, user_id, ctx: Context, job_id: int, when: str = "now
     test = await outbox.is_test_mode(s, user_id)
     to = draft.to_emails  # every HR address of the post, together in one email
     at_text = "now" if when.strip().lower() == "now" else _when_text(at)
+    try:  # the same notes as the job card's pop-up, shown on the Confirm card: confirming = "send anyway"
+        notes = await outbox.send_notes(s, user_id, job, [e.lower() for e in to], ctx.now, test)
+    except outbox.NotAllowed as e:
+        return ToolResult(str(e))
     summary = f"Send “{draft.subject}” to {', '.join(to)} ({job.company} · {job.role}) {at_text}" + (TEST_NOTE if test else "")
+    summary += "".join(f"\n⚠ {n}" for n in notes)
     return await _propose(s, user_id, "schedule", {"job_id": job.id, "to": to, "when": at.isoformat()}, summary)
 
 

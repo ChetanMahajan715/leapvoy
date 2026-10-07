@@ -68,6 +68,14 @@ api.interceptors.response.use(undefined, async (error: AxiosError) => {
 });
 
 /** A readable message from any API error (FastAPI puts it in `detail`) or our own thrown Error. */
+/** A 409 {"confirm": [...]} answer: not an error but things the user should know (e.g. "you emailed this address
+ * 3 days ago") before deciding to send anyway. null for anything else. */
+export function confirmNotes(e: unknown): string[] | null {
+  if (!isAxiosError(e) || e.response?.status !== 409) return null;
+  const detail = (e.response.data as { detail?: { confirm?: string[] } })?.detail;
+  return Array.isArray(detail?.confirm) ? detail.confirm : null;
+}
+
 export function errorMessage(e: unknown, fallback = 'Something went wrong. Please try again.'): string {
   if (isAxiosError(e)) {
     if (!e.response) return `Can't reach Leapvoy at ${API_URL}. Is the server running (and Tailscale on)?`;

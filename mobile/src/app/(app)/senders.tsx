@@ -119,8 +119,8 @@ export default function EmailAccounts() {
               )}
               <Text style={[styles.modeText, { color: colors.text }]}>
                 {s.test_mode
-                  ? 'Test mode is ON: every email goes to your own inbox, never to HR.'
-                  : 'Test mode is OFF: approved emails go to HR.'}
+                  ? 'Test mode is ON: every email goes to your own inbox, never to a company.'
+                  : 'Test mode is OFF: approved emails go to the addresses in the job posts.'}
               </Text>
             </View>
             <T variant="muted">
@@ -197,9 +197,9 @@ export default function EmailAccounts() {
 
       <Sheet open={askOff} title="Turn test mode off?" onClose={() => setAskOff(false)}>
         <View style={{ gap: spacing.md }}>
-          <T>Emails you approve will go to the real HR addresses, from your default email account. Nothing is sent without your approval, and every safety rule still applies.</T>
+          <T>Emails you approve will go to the real addresses in the job posts, from your default email account. Nothing is sent without your approval, and every safety rule still applies.</T>
           {mode.error ? <T variant="error">{errorMessage(mode.error)}</T> : null}
-          <Button kind="danger" title="Yes, send to HR" busy={mode.isPending} onPress={() => mode.mutate(false)} />
+          <Button kind="danger" title="Yes, send for real" busy={mode.isPending} onPress={() => mode.mutate(false)} />
           <Button kind="secondary" title="Keep test mode on" onPress={() => setAskOff(false)} />
         </View>
       </Sheet>
