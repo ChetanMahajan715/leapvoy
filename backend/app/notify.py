@@ -80,10 +80,11 @@ async def job_alerts(s: AsyncSession, post: Post, jobs, now: datetime) -> None:
             continue
         email = j.apply_method == "email" and j.hr_emails
         facts = [j.location, j.salary, j.experience, "Email ready" if email else "Apply link"]
-        await add(s, post.user_id, "job", f"{j.fit_score} · {verdict_label(j.verdict)} · {j.role}, {j.company}",
-                  " · ".join(f for f in facts if f),
-                  {"job_id": j.id, "verdict": j.verdict, "score": j.fit_score, "screen": "jobs",
-                   "date": post.posted_at.astimezone(report.IST).date().isoformat()})
+        await once(s, post.user_id, "job", f"job:{j.id}",  # a re-check with a new resume never alerts twice
+                   f"{j.fit_score} · {verdict_label(j.verdict)} · {j.role}, {j.company}",
+                   " · ".join(f for f in facts if f),
+                   {"job_id": j.id, "verdict": j.verdict, "score": j.fit_score, "screen": "jobs",
+                    "date": post.posted_at.astimezone(report.IST).date().isoformat()})
 
 
 async def send_expo(messages: list[dict]) -> list[dict]:

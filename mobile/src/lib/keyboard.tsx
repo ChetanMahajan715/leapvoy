@@ -15,14 +15,22 @@ export function KeyboardRoot({ children }: { children: ReactNode }) {
   return kc ? <kc.KeyboardProvider>{children}</kc.KeyboardProvider> : children;
 }
 
-/** Lifts its content above the keyboard (chat composer). */
+/** Lifts its content above the keyboard (chat composer): the input box sits right on top of the keyboard. */
 export function AvoidKeyboard({ children, style }: { children: ReactNode; style?: ViewStyle }) {
   if (Platform.OS === 'web') return <View style={style}>{children}</View>;
-  const Avoid = kc ? kc.KeyboardAvoidingView : KeyboardAvoidingView;
+  if (kc) {
+    // the library's chat mode; automaticOffset measures where this view starts (below the app header), which plain
+    // "padding" didn't, so on Android 15+ (edge to edge) the box stayed under the keyboard
+    return (
+      <kc.KeyboardAvoidingView behavior="translate-with-padding" automaticOffset style={style}>
+        {children}
+      </kc.KeyboardAvoidingView>
+    );
+  }
   return (
-    <Avoid behavior="padding" style={style}>
+    <KeyboardAvoidingView behavior="padding" style={style}>
       {children}
-    </Avoid>
+    </KeyboardAvoidingView>
   );
 }
 

@@ -16,7 +16,7 @@ import Animated, {
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
-import Svg, { Circle, Defs, LinearGradient, Path, Stop } from 'react-native-svg';
+import Svg, { Circle, Defs, G, LinearGradient, Path, Stop } from 'react-native-svg';
 
 import { fonts, palette } from '@/theme/theme';
 import { useColors } from '@/theme/use-colors';
@@ -106,9 +106,12 @@ export function Opening() {
     strokeDashoffset: HIDDEN * (1 - draw.value),
     opacity: 0.28 - 0.18 * Math.max(0, draw.value - 0.6) / 0.4,
   }));
-  const headStyle = useAnimatedStyle(() => ({
-    opacity: head.value > 0.01 ? 1 : 0,
-    transform: [{ scale: head.value }, { rotate: `${(1 - head.value) * -30}deg` }],
+  // the arrowhead lives in the same drawing as the curve and animates the same way (Android didn't draw a separate
+  // layer that started at scale 0): it fades in while a gold glow around it shrinks away, so it seems to land
+  const headProps = useAnimatedProps(() => ({ opacity: Math.min(1, head.value * 2) }));
+  const headGlowProps = useAnimatedProps(() => ({
+    strokeWidth: Math.max(0, 70 * (1 - head.value)),
+    opacity: head.value > 0.01 ? Math.max(0, 0.5 * (1 - head.value)) : 0,
   }));
   const lockupStyle = useAnimatedStyle(() => ({ opacity: 1 - away.value, transform: [{ scale: 1 - away.value * 0.06 }] }));
   const curtainStyle = useAnimatedStyle(() => ({ opacity: curtain.value }));
@@ -138,13 +141,11 @@ export function Opening() {
               <AnimatedPath d={CURVE} fill="none" stroke="url(#leap)" strokeWidth={72} strokeLinecap="round"
                 strokeDasharray={[LENGTH, HIDDEN * 2]} animatedProps={curveProps} />
               <AnimatedCircle cx={250} cy={742} fill="url(#leap)" animatedProps={dotProps} />
+              <G transform="translate(700 330) rotate(-14)">
+                <AnimatedPath d={HEAD} fill="none" stroke={palette.spark} strokeLinejoin="round" animatedProps={headGlowProps} />
+                <AnimatedPath d={HEAD} fill={palette.spark} animatedProps={headProps} />
+              </G>
             </Svg>
-            {/* the arrowhead in its own layer, so it can spring around its own centre */}
-            <Animated.View style={[StyleSheet.absoluteFill, { transformOrigin: `${((700 - 140) / 640) * 100}% ${((330 - 260) / 600) * 100}%` }, headStyle]}>
-              <Svg width={SIZE} height={height} viewBox={viewBox}>
-                <Path transform="translate(700 330) rotate(-14)" d={HEAD} fill={palette.spark} />
-              </Svg>
-            </Animated.View>
           </View>
           <View style={styles.word}>
             {WORD.map((ch, i) => (

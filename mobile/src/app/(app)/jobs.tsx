@@ -100,6 +100,13 @@ export default function Jobs() {
 
   const all = q.data ?? [];
   const posts = pq.data ?? [];
+  const jobCount = posts.reduce((n, p) => n + p.jobs.length, 0);
+  const waiting = posts.filter((p) => p.kind === 'pending').length;
+  const resumes = useQuery({
+    queryKey: ['resumes'],
+    queryFn: async () => (await api.get<{ name: string; is_active: boolean }[]>('/resumes')).data,
+  });
+  const primary = resumes.data?.find((r) => r.is_active)?.name;
   useAutoCheck(day, posts.some((p) => p.kind === 'pending')); // Recommended fills in by itself too
   // Both tabs share the Email / Link filter, the model picker and selection
   const count = (k: Kind) =>
@@ -138,7 +145,7 @@ export default function Jobs() {
                 <CalendarDays size={18} color={colors.primaryText} strokeWidth={2} />
               </View>
               {pq.data && q.data ? (
-                <Text style={[styles.daySub, { color: colors.textMuted }]}>{`${posts.length} posts · ${all.length} recommended`}</Text>
+                <Text style={[styles.daySub, { color: colors.textMuted }]}>{`${posts.length} posts · ${jobCount} jobs · ${all.length} recommended`}</Text>
               ) : null}
             </View>
           </Pressable>
@@ -154,6 +161,11 @@ export default function Jobs() {
           <Small color={fetchNew.error ? colors.error : colors.text}>
             {fetchNew.error ? errorMessage(fetchNew.error) : fetched ? fetchedText(fetched) : ''}
           </Small>
+        </View>
+      ) : null}
+      {waiting && primary ? (
+        <View style={[styles.note, { backgroundColor: colors.primarySoft }]}>
+          <Small color={colors.text}>{`Checking ${waiting} ${waiting === 1 ? 'post' : 'posts'} with your resume "${primary}"…`}</Small>
         </View>
       ) : null}
 

@@ -1,6 +1,7 @@
 """Resume PDF → text → chunks → pgvector; match a post against the user's active resume."""
 
 import asyncio
+from datetime import timedelta
 import re
 import uuid
 
@@ -8,8 +9,9 @@ import pymupdf
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Draft, Resume, ResumeChunk, Send
+from app.db.models import Draft, Job, Post, Resume, ResumeChunk, Send
 from app.pipeline import embed
+from app.pipeline.report import day_bounds, today
 
 MIN_TEXT = 200  # fewer characters → probably a scanned image PDF
 
@@ -105,15 +107,19 @@ async def _embed(texts: list[str]) -> list[list[float]]:
 
 
 async def add_resume(
-    s: AsyncSession, user_id: uuid.UUID, name: str, pdf: bytes, filename: str = "resume.pdf", text: str | None = None
+    s: AsyncSession, user_id: uuid.UUID, name: str, pdf: bytes, filename: str = "resume.pdf", text: str | None = None,
+    primary: bool = True,
 ) -> Resume:
-    """New version becomes active; older versions stay (restore later). The PDF is kept for attaching.
+    """primary: the new version becomes the one used for matching and emails (the first resume always does);
+    otherwise it is just stored. Older versions stay (switch later). The PDF is kept for attaching.
     text: already read (e.g. OCR'd in a thread by the API); else read here."""
     text = text or pdf_or_ocr_text(pdf)
     pieces = chunk(text)
     vectors = await _embed(pieces)
-    await s.execute(update(Resume).where(Resume.user_id == user_id).values(is_active=False))
-    r = Resume(user_id=user_id, name=name, text=text, pdf=pdf, filename=filename, is_active=True)
+    primary = primary or await active_resume(s, user_id) is None
+    if primary:
+        await s.execute(update(Resume).where(Resume.user_id == user_id).values(is_active=False))
+    r = Resume(user_id=user_id, name=name, text=text, pdf=pdf, filename=filename, is_active=primary)
     s.add(r)
     await s.flush()
     s.add_all(
@@ -157,6 +163,25 @@ async def activate_resume(s: AsyncSession, user_id: uuid.UUID, resume_id: int) -
     return r
 
 
+async def recheck_recent(s: AsyncSession, user_id: uuid.UUID) -> int:
+    """After the primary resume changes: today's and yesterday's (India) jobs are scored again with it, and posts
+    skipped as a weak match get a second look. Jobs already emailed keep their score. Returns posts queued."""
+    since, _ = day_bounds(today() - timedelta(days=1))
+    recent = select(Post.id).where(Post.user_id == user_id, Post.posted_at >= since)
+    emailed = select(Send.job_id).where(Send.user_id == user_id)
+    jobs = select(Job.id).where(Job.user_id == user_id, Job.post_id.in_(recent), Job.id.not_in(emailed))
+    cleared = (await s.execute(update(Job).where(Job.id.in_(jobs)).values(
+        fit_score=None, verdict=None, fit_rows=None, matched_skills=[], gaps=[], flags=[], resume_id=None,
+    ).returning(Job.post_id))).scalars().all()
+    rescore = (await s.execute(update(Post).where(Post.id.in_(set(cleared)), Post.stage == "scored")
+                               .values(stage="extracted").returning(Post.id))).scalars().all()
+    rematch = (await s.execute(update(Post).where(
+        Post.id.in_(recent), Post.stage == "skipped", Post.skip_reason == "low_match"
+    ).values(stage="new", skip_reason=None).returning(Post.id))).scalars().all()
+    await s.commit()
+    return len(rescore) + len(rematch)
+
+
 async def delete_resume(s: AsyncSession, user_id: uuid.UUID, resume_id: int) -> None:
     """Drafts written from it go too (they were outdated); sent emails keep their own copy."""
     r = await _own(s, user_id, resume_id)
@@ -187,18 +212,21 @@ async def _reembed_stale(s: AsyncSession, resume_id: int) -> None:
     await s.commit()
 
 
-async def match_score(s: AsyncSession, user_id: uuid.UUID, text: str) -> float | None:
-    """Best cosine similarity between the post and any chunk of the active resume. None = no resume yet."""
+async def match_score(s: AsyncSession, user_id: uuid.UUID, text: str | list[str]) -> float | None:
+    """Best cosine similarity between the post (or any of its texts, e.g. one per job in a multi-job post) and any
+    chunk of the active resume. None = no resume yet."""
     r = await active_resume(s, user_id)
     if r is None:
         return None
     await _reembed_stale(s, r.id)
-    [v] = await _embed([text])
-    distance = (
-        await s.execute(
-            select(func.min(ResumeChunk.embedding.cosine_distance(v))).where(
-                ResumeChunk.user_id == user_id, ResumeChunk.resume_id == r.id
+    best = 0.0
+    for v in await _embed([text] if isinstance(text, str) else text):
+        distance = (
+            await s.execute(
+                select(func.min(ResumeChunk.embedding.cosine_distance(v))).where(
+                    ResumeChunk.user_id == user_id, ResumeChunk.resume_id == r.id
+                )
             )
-        )
-    ).scalar_one()
-    return 1 - distance
+        ).scalar_one()
+        best = max(best, 1 - distance)
+    return best

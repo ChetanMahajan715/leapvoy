@@ -10,11 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_user, get_db
 from app.chat import actions, tools
-from app.db.models import Draft, Job, PendingAction, Post, Send, User
+from app.db.models import Draft, Job, PendingAction, Post, Resume, Send, User
 from app.llm import models
 from app.mailer import drafts, outbox
 from app.mailer.when import parse_when
 from app.pipeline import graph, posts as post_info, report
+from app.pipeline.sections import excerpt
 
 router = APIRouter()
 
@@ -42,11 +43,17 @@ async def job_json(s: AsyncSession, job: Job) -> dict:
     post = await s.get(Post, job.post_id)
     draft = (await s.execute(select(Draft).where(Draft.job_id == job.id))).scalar_one_or_none()
     send = (await s.execute(select(Send).where(Send.job_id == job.id).order_by(Send.id.desc()).limit(1))).scalar_one_or_none()
+    own_text = None
+    if post:  # only this job's part of the post (a post can list many jobs)
+        names = [(c, r) for c, r in (await s.execute(
+            select(Job.company, Job.role).where(Job.post_id == post.id).order_by(Job.idx))).all()]
+        own_text = excerpt(post.text, names, job.idx, job.hr_emails, job.apply_links)
+    checked_with = await s.scalar(select(Resume.name).where(Resume.id == job.resume_id)) if job.resume_id else None
     return {
         "id": job.id, "company": job.company, "role": job.role, "location": job.location, "work_mode": job.work_mode,
         "experience": job.experience, "salary": job.salary, "fit_score": job.fit_score, "verdict": job.verdict,
         "must_have_skills": job.must_have_skills, "apply_instructions": job.apply_instructions, "hr_name": job.hr_name,
-        "post_text": post.text if post else None,  # the original Telegram post, shown as-is
+        "post_text": own_text, "checked_with": checked_with,
         "flags": job.flags, "fit_rows": job.fit_rows or [], "matched_skills": job.matched_skills, "gaps": job.gaps,
         "apply_method": job.apply_method, "hr_emails": job.hr_emails, "apply_links": job.apply_links,
         "posted_at": post.posted_at if post else None,

@@ -72,11 +72,12 @@ async def unscored_jobs(s: AsyncSession, post_id: int) -> list[Job]:
     return list((await s.execute(q)).scalars())
 
 
-async def save_fit(s: AsyncSession, job_id: int, fit: FitCheck) -> None:
+async def save_fit(s: AsyncSession, job_id: int, fit: FitCheck, resume_id: int | None = None) -> None:
     await s.execute(
         update(Job)
         .where(Job.id == job_id)
         .values(
+            resume_id=resume_id,
             fit_score=fit.score,
             verdict=fit.verdict,
             fit_rows=[r.model_dump() for r in fit.rows],

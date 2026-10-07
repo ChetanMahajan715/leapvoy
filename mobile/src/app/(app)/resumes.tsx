@@ -1,9 +1,9 @@
-/** Resumes: upload a new version (PDF; scanned ones are read with OCR), switch back to an older one, delete old ones.
- * The active one is used to match jobs and is attached to every email. */
+/** Resumes: upload a new version (PDF; scanned ones are read with OCR), choose the primary one, delete old ones.
+ * The primary one is used to match jobs and is attached to every email; changing it re-checks recent jobs. */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, FileUp, TriangleAlert } from 'lucide-react-native';
 import { useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Switch, Text, View } from 'react-native';
 
 import { Pill } from '@/components/chat-cards';
 import { Sheet } from '@/components/sheet';
@@ -16,7 +16,7 @@ import { useColors } from '@/theme/use-colors';
 type Resume = {
   id: number; name: string; filename: string | null; is_active: boolean; created_at: string; chars: number; drafts: number;
 };
-type Uploaded = { resume: Resume; warnings: string[]; outdated_drafts: number };
+type Uploaded = { resume: Resume; warnings: string[]; outdated_drafts: number; rechecking: number };
 type Picked = { name: string; base64: string };
 
 const MAX_MB = 5;
@@ -31,25 +31,29 @@ export default function Resumes() {
   const q = useQuery({ queryKey: ['resumes'], queryFn: async () => (await api.get<Resume[]>('/resumes')).data });
   const [file, setFile] = useState<Picked | null>(null);
   const [name, setName] = useState('');
+  const [primary, setPrimary] = useState(true);
+  const [switched, setSwitched] = useState<{ name: string; rechecking: number } | null>(null);
   const [done, setDone] = useState<Uploaded | null>(null);
   const [pickError, setPickError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Resume | null>(null);
-  // a new active resume changes matches and makes older drafts outdated
+  // a new primary resume changes matches and makes older drafts outdated
   const refresh = () => Promise.all(['resumes', 'jobs', 'posts'].map((k) => qc.invalidateQueries({ queryKey: [k] })));
 
   const upload = useMutation({
     mutationFn: async (f: Picked) =>
-      (await api.post<Uploaded>('/resumes', { name: name.trim(), filename: f.name, data: f.base64 }, { timeout: 120_000 })).data,
+      (await api.post<Uploaded>('/resumes', { name: name.trim(), filename: f.name, data: f.base64, primary }, { timeout: 120_000 })).data,
     onSuccess: (u) => {
       setDone(u);
+      setSwitched(null);
       setFile(null);
       void refresh();
     },
   });
   const activate = useMutation({
-    mutationFn: (id: number) => api.post(`/resumes/${id}/activate`),
-    onSuccess: () => {
+    mutationFn: async (id: number) => (await api.post<Resume & { rechecking: number }>(`/resumes/${id}/activate`)).data,
+    onSuccess: (r) => {
       setDone(null);
+      setSwitched({ name: r.name, rechecking: r.rechecking });
       void refresh();
     },
   });
@@ -69,6 +73,7 @@ export default function Resumes() {
       if (!/\.pdf$/i.test(f.name)) throw new Error('Choose a PDF file.');
       upload.reset();
       setName(f.name.replace(/\.pdf$/i, ''));
+      setPrimary(true);
       setFile(f);
     } catch (e) {
       setPickError(errorMessage(e));
@@ -80,8 +85,8 @@ export default function Resumes() {
       <Card>
         <T variant="heading">Your resume</T>
         <T variant="muted">
-          Leapvoy matches jobs against your active resume and attaches its PDF to every email. Older versions are kept, so
-          you can switch back.
+          {"Leapvoy matches jobs against your primary resume and attaches its PDF to every email. Other versions are kept, " +
+            "so you can switch any time; today's and yesterday's jobs are then checked again with it."}
         </T>
         <View style={styles.uploadRow}>
           <Pill label="Upload new resume (PDF)" icon={FileUp} primary onPress={choose} />
@@ -92,8 +97,11 @@ export default function Resumes() {
           <View style={[styles.note, { backgroundColor: colors.background, borderColor: colors.border }]}>
             <View style={styles.line}>
               <CheckCircle2 size={16} color={colors.success} strokeWidth={2} />
-              <Text style={[styles.noteText, { color: colors.text }]}>“{done.resume.name}” is now your active resume.</Text>
+              <Text style={[styles.noteText, { color: colors.text }]}>
+                {done.resume.is_active ? `“${done.resume.name}” is now your primary resume.` : `“${done.resume.name}” is saved. Your primary resume didn't change.`}
+              </Text>
             </View>
+            {done.rechecking ? <Rechecking n={done.rechecking} /> : null}
             {done.warnings.map((w) => (
               <View key={w} style={styles.line}>
                 <TriangleAlert size={16} color={colors.warning} strokeWidth={2} />
@@ -108,6 +116,15 @@ export default function Resumes() {
             ) : null}
           </View>
         ) : null}
+        {switched ? (
+          <View style={[styles.note, { backgroundColor: colors.background, borderColor: colors.border }]}>
+            <View style={styles.line}>
+              <CheckCircle2 size={16} color={colors.success} strokeWidth={2} />
+              <Text style={[styles.noteText, { color: colors.text }]}>“{switched.name}” is now your primary resume.</Text>
+            </View>
+            {switched.rechecking ? <Rechecking n={switched.rechecking} /> : null}
+          </View>
+        ) : null}
       </Card>
 
       {q.error ? <T variant="error">{errorMessage(q.error)}</T> : null}
@@ -118,7 +135,7 @@ export default function Resumes() {
             <Text numberOfLines={2} style={[styles.name, { color: colors.text }]}>{r.name}</Text>
             {r.is_active ? (
               <View style={[styles.chip, { borderColor: colors.success }]}>
-                <Text style={[styles.chipText, { color: colors.success }]}>Active</Text>
+                <Text style={[styles.chipText, { color: colors.success }]}>Primary</Text>
               </View>
             ) : null}
           </View>
@@ -129,7 +146,7 @@ export default function Resumes() {
           {!r.is_active ? (
             <View style={styles.uploadRow}>
               <Pill
-                label="Make active"
+                label="Make primary"
                 primary
                 busy={activate.isPending && activate.variables === r.id}
                 onPress={() => activate.mutate(r.id)}
@@ -147,7 +164,21 @@ export default function Resumes() {
           <T variant="muted">{file?.name}</T>
           {upload.isPending ? <T variant="muted">Reading your resume… (a scanned PDF takes a little longer)</T> : null}
           {upload.error ? <T variant="error">{errorMessage(upload.error)}</T> : null}
-          <Button title="Upload and make active" busy={upload.isPending} disabled={!name.trim()} onPress={() => file && upload.mutate(file)} />
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.noteText, { color: colors.text }]}>Make this my primary resume</Text>
+              <T variant="muted">{primary ? 'Used for matching jobs and attached to emails.' : 'Just saved; your current primary stays in use.'}</T>
+            </View>
+            <Switch
+              accessibilityLabel="Make this my primary resume"
+              value={primary}
+              onValueChange={setPrimary}
+              trackColor={{ false: colors.border, true: colors.primary }}
+              thumbColor={colors.surface}
+              {...({ activeThumbColor: colors.surface } as object)} // web uses its own prop for the "on" knob
+            />
+          </View>
+          <Button title={primary ? 'Upload as primary' : 'Upload'} busy={upload.isPending} disabled={!name.trim()} onPress={() => file && upload.mutate(file)} />
         </View>
       </Sheet>
       <Sheet open={!!deleting} title="Delete this resume?" onClose={() => setDeleting(null)}>
@@ -171,4 +202,14 @@ const styles = StyleSheet.create({
   name: { fontFamily: fonts.semibold, fontSize: 17, flexShrink: 1 },
   chip: { borderWidth: 1, borderRadius: radius.pill, paddingVertical: 3, paddingHorizontal: 10 },
   chipText: { fontFamily: fonts.semibold, fontSize: 12 },
+  switchRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
 });
+
+/** Tells the user which jobs get a second look with the new primary resume. */
+function Rechecking({ n }: { n: number }) {
+  return (
+    <T variant="muted">
+      {`Checking ${n} recent ${n === 1 ? 'post' : 'posts'} (today and yesterday) again with it. Jobs show the new scores in a few minutes, with "Checked with" on each card.`}
+    </T>
+  );
+}

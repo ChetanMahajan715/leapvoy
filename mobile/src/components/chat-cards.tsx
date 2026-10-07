@@ -43,6 +43,7 @@ export type Job = {
   apply_method: 'email' | 'link'; apply_links: string[]; draft: Draft | null; send: Send | null;
   salary: string | null; hr_emails: string[]; must_have_skills: string[]; apply_instructions: string | null;
   hr_name: string | null; post_text: string | null; posted_at: string | null;
+  checked_with: string | null; // the resume that scored this job
 };
 /** One Telegram post as it was posted, plus what Leapvoy did with it (GET /posts). */
 export type PostInfo = {
@@ -193,10 +194,14 @@ function PostText({ text }: { text: string }) {
 
 /** One Telegram post: its job card(s), same as Recommended, or, when there is no job, a short card saying why. */
 export function PostItem({ post, picked, onToggle }: { post: PostInfo; picked: number[]; onToggle: (id: number) => void }) {
+  const { colors } = useColors();
   if (post.jobs.length === 1) return <JobItem job={post.jobs[0]} picked={picked} onToggle={onToggle} />;
   if (post.jobs.length) {
     return (
       <View style={{ gap: spacing.sm }}>
+        <Text style={[styles.time, { color: colors.textMuted, paddingHorizontal: spacing.xs }]}>
+          {`From one post · ${postedWhen(post.posted_at).replace('Posted ', '')} · ${post.jobs.length} jobs`}
+        </Text>
         {post.jobs.map((j) => (
           <JobItem key={j.id} job={j} picked={picked} onToggle={onToggle} />
         ))}
@@ -525,6 +530,11 @@ export function JobCard({
           </View>
           <Text numberOfLines={1} style={[styles.small, { color: colors.textMuted }]}>{where}</Text>
           {job.fit_score !== null ? <View style={{ marginTop: 6 }}><FitPill score={job.fit_score} verdict={job.verdict} /></View> : null}
+          {job.checked_with ? (
+            <Text numberOfLines={1} style={[styles.time, { color: colors.textMuted, marginTop: 4 }]}>
+              Checked with: {job.checked_with}
+            </Text>
+          ) : null}
         </View>
       </View>
 

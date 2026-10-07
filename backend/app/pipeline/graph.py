@@ -26,6 +26,7 @@ from app.pipeline import store
 from app.pipeline.prefilter import prefilter
 from app.pipeline.resume import active_resume, match_score
 from app.pipeline.rules import apply_rules, title_is_unrelated
+from app.pipeline.sections import excerpt, split_jobs
 
 log = structlog.get_logger()
 SessionMaker = async_sessionmaker[AsyncSession]
@@ -79,7 +80,9 @@ def build(sm: SessionMaker):
     async def match_node(state: State) -> State:
         async with sm() as s:
             post = await s.get(Post, state["post_id"])
-            score = await match_score(s, post.user_id, post.text[:MATCH_TEXT_LIMIT])
+            # a post listing many jobs: each job is matched on its own text (the start of a long post would hide the rest)
+            blocks = [b[:MATCH_TEXT_LIMIT] for b in split_jobs(post.text)]
+            score = await match_score(s, post.user_id, [post.text[:MATCH_TEXT_LIMIT], *blocks])
             if score is None:
                 raise NoResume
             ok = score >= get_settings().match_threshold
@@ -91,15 +94,19 @@ def build(sm: SessionMaker):
     async def extract_node(state: State) -> State:
         async with sm() as s:
             post = await s.get(Post, state["post_id"])
-            out = await structured(
-                "small",
-                [{"role": "system", "content": prompts.load("extract")}, {"role": "user", "content": post.text}],
-                ExtractedPost,
-            )
+
+            async def read(text: str) -> list[JobPost]:
+                msgs = [{"role": "system", "content": prompts.load("extract")}, {"role": "user", "content": text}]
+                return (await structured("small", msgs, ExtractedPost)).jobs
+
+            found = await read(post.text)
+            blocks = split_jobs(post.text)
+            if len(found) < len(blocks):  # the AI missed some jobs of a long list: read each job's block on its own
+                found = [j for b in blocks for j in await read(b)]
             allowed = set(post.emails)  # the LLM may only use addresses/links that are really in the post
             jobs: list[JobPost] = []
-            single = len(out.jobs) == 1
-            for j in out.jobs:
+            single = len(found) == 1
+            for j in found:
                 emails = [e for e in dict.fromkeys(e.strip().lower() for e in j.hr_emails) if e in allowed]
                 links = ground_links(j.apply_links, post.links)
                 if single and not j.hr_emails and not j.apply_links:  # the AI forgot how to apply (gave nothing,
@@ -124,10 +131,13 @@ def build(sm: SessionMaker):
             system = prompts.load("fit").format(
                 profile=json.dumps(await get_profile(s, post.user_id), ensure_ascii=False), resume=resume.text
             )
+            siblings = (await s.execute(select(Job).where(Job.post_id == post.id).order_by(Job.idx))).scalars().all()
+            names = [(j.company, j.role) for j in siblings]
             for job in await store.unscored_jobs(s, post.id):  # saved per job → resumes mid-post
                 if title_is_unrelated(job.role):  # the rules would force SKIP anyway → save ~3k tokens
-                    await store.save_fit(s, job.id, SKIP_UNRELATED)
+                    await store.save_fit(s, job.id, SKIP_UNRELATED, resume.id)
                     continue
+                own = excerpt(post.text, names, job.idx, job.hr_emails, job.apply_links)  # only this job's part
                 job_json = json.dumps(
                     {k: getattr(job, k) for k in ("company", "role", "experience", "location", "work_mode",
                                                   "must_have_skills", "salary", "apply_instructions")},
@@ -136,10 +146,10 @@ def build(sm: SessionMaker):
                 fit = await structured(
                     "large",
                     [{"role": "system", "content": system},
-                     {"role": "user", "content": f"Job:\n{job_json}\n\nOriginal post:\n{post.text}"}],
+                     {"role": "user", "content": f"Job:\n{job_json}\n\nOriginal post:\n{own}"}],
                     FitCheck,
                 )
-                await store.save_fit(s, job.id, apply_rules(fit, job.role))  # user's rules decide
+                await store.save_fit(s, job.id, apply_rules(fit, job.role), resume.id)  # user's rules decide
             await store.update_post(s, post.id, stage="scored", skip_reason=None)
             await s.refresh(post)
             jobs = (await s.execute(select(Job).where(Job.post_id == post.id))).scalars().all()

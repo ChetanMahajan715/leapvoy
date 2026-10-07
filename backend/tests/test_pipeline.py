@@ -67,7 +67,7 @@ def match(monkeypatch):
         return state["score"]
 
     async def fake_resume(s, user_id):
-        return None if state["score"] is None else SimpleNamespace(text="AI Engineer resume: Python, LangChain")
+        return None if state["score"] is None else SimpleNamespace(id=None, text="AI Engineer resume: Python, LangChain")
 
     monkeypatch.setattr(graph, "match_score", fake_match)
     monkeypatch.setattr(graph, "active_resume", fake_resume)
@@ -311,3 +311,50 @@ async def test_several_jobs_without_their_own_links_are_not_given_a_guessed_one(
     llm.jobs = [job("A", []), job("B", [])]
     _, [pid] = await make_posts(sm, ["Two roles. Apply: https://forms.gle/abc123"])
     assert await graph.run_post(sm, pid) == "skipped"
+
+
+MULTI_POST = "\n\n".join(
+    [f"{i}) Company - Firm{i}\nRole - {r}\nSkills: Python\nApply: hr{i}@firm{i}.com" for i, r in
+     enumerate(["Software Developer Intern", "Business Analyst", "Product Intern", "Sales Associate",
+                "Content Writer", "ML Engineer"], start=1)])
+
+
+async def test_multi_job_post_matches_every_job_not_just_the_start(sm, llm, monkeypatch):
+    seen = {}
+
+    async def fake_match(s, user_id, texts):
+        seen["texts"] = texts
+        return 0.8 if any("ML Engineer" in t for t in texts) else 0.3  # only the last job fits
+
+    async def fake_resume(s, user_id):
+        return SimpleNamespace(id=None, text="ML resume")
+
+    monkeypatch.setattr(graph, "match_score", fake_match)
+    monkeypatch.setattr(graph, "active_resume", fake_resume)
+    llm.jobs = [job(f"Firm{i}", [f"hr{i}@firm{i}.com"], role=f"Role {i}") for i in range(1, 7)]
+    _, [pid] = await make_posts(sm, [MULTI_POST])
+    await graph.run_post(sm, pid)
+    assert len(seen["texts"]) == 7  # the post start + each of the 6 job blocks
+    assert (await post(sm, pid)).stage == "scored" and len(await jobs(sm, pid)) == 6
+
+
+async def test_missed_jobs_are_read_block_by_block_and_each_scored_on_its_own_text(sm, monkeypatch, match):
+    prompts: list[str] = []
+
+    async def fake(tier, messages, response_model, **kw):
+        text = messages[-1]["content"]
+        if response_model is ExtractedPost:
+            if text == MULTI_POST:
+                return ExtractedPost(jobs=[job("Firm1", ["hr1@firm1.com"])])  # the AI saw only the first job
+            i = int(text.split(")")[0])
+            return ExtractedPost(jobs=[job(f"Firm{i}", [f"hr{i}@firm{i}.com"], role=f"Role {i}")])
+        prompts.append(text)
+        return fitcheck(70, "APPLY")
+
+    monkeypatch.setattr(graph, "structured", fake)
+    _, [pid] = await make_posts(sm, [MULTI_POST])
+    await graph.run_post(sm, pid)
+    found = await jobs(sm, pid)
+    assert [j.company for j in found] == [f"Firm{i}" for i in range(1, 7)]
+    assert len(prompts) == 6
+    assert "Firm3" in prompts[2] and "Firm1" not in prompts[2] and "Firm4" not in prompts[2]  # its own block only

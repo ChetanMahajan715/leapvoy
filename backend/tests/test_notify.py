@@ -75,10 +75,17 @@ async def test_old_posts_and_weaker_fits_do_not_buzz(db, smtp, expo):
     [n] = await rows(db, uid2, "job")
     assert n.push == "none" and await notify.push_pending(db, NOW) == 0
     await notify.save_prefs(db, uid2, {"min_fit": "APPLY"})
-    await notify.job_alerts(db, (await db.execute(select(Post).where(Post.user_id == uid2))).scalars().first(),
-                            (await db.execute(select(Job).where(Job.user_id == uid2))).scalars().all(), NOW)
+    post2 = (await db.execute(select(Post).where(Post.user_id == uid2))).scalars().first()
+    await notify.job_alerts(db, post2, (await db.execute(select(Job).where(Job.user_id == uid2))).scalars().all(), NOW)
     await db.commit()
-    assert await notify.push_pending(db, NOW) == 1
+    assert len(await rows(db, uid2, "job")) == 1  # one job never alerts twice (e.g. re-checked after a new resume)
+    new = Job(user_id=uid2, post_id=post2.id, idx=9, company="New", role="ML Engineer", verdict="APPLY",
+              fit_score=70, apply_method="email")
+    db.add(new)
+    await db.commit()
+    await notify.job_alerts(db, post2, [new], NOW)
+    await db.commit()
+    assert await notify.push_pending(db, NOW) == 1  # a new Good fit buzzes now that the user asked for those
 
 
 async def test_quiet_hours_hold_jobs_but_security_goes(db, smtp, expo):

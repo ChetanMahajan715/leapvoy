@@ -97,11 +97,13 @@ class ResumeIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     filename: str = Field(min_length=1, max_length=255)
     data: str = Field(max_length=MAX_PDF * 4 // 3 + 8)  # base64 JSON: Expo's native fetch can't post {uri} FormData
+    primary: bool = True  # use it for matching and emails from now on (the first resume always is)
 
 
 @router.post("/resumes")
 async def upload_resume(body: ResumeIn, user: User = Depends(current_user), s: AsyncSession = Depends(get_db)):
-    """New version becomes active. Scanned PDFs are OCR'd. Says which links differ from the profile."""
+    """Stores a new version, primary if asked (then recent jobs are re-checked with it). Scanned PDFs are OCR'd.
+    Says which links differ from the profile."""
     if not body.filename.lower().endswith(".pdf"):
         raise HTTPException(415, "Upload your resume as a PDF.")
     try:
@@ -116,18 +118,25 @@ async def upload_resume(body: ResumeIn, user: User = Depends(current_user), s: A
         text = await run_in_threadpool(resumes.pdf_or_ocr_text, pdf)  # OCR is CPU work: off the event loop
     except resumes.ScannedPdfError as e:
         raise HTTPException(422, str(e)) from None
-    r = await resumes.add_resume(s, user.id, body.name.strip(), pdf, filename=body.filename, text=text)
+    r = await resumes.add_resume(s, user.id, body.name.strip(), pdf, filename=body.filename, text=text,
+                                 primary=body.primary)
+    rechecking = await resumes.recheck_recent(s, user.id) if r.is_active else 0
     warnings = resumes.link_mismatches(resumes.pdf_links(pdf), await get_profile(s, user.id))
-    return {"resume": resume_json(r), "warnings": warnings, "outdated_drafts": await _outdated(s, user.id, r.id)}
+    active = await resumes.active_resume(s, user.id)
+    return {"resume": resume_json(r), "warnings": warnings, "rechecking": rechecking,
+            "outdated_drafts": await _outdated(s, user.id, active.id)}
 
 
 @router.post("/resumes/{resume_id}/activate")
 async def activate(resume_id: int, user: User = Depends(current_user), s: AsyncSession = Depends(get_db)):
+    """Make this the primary resume; today's and yesterday's jobs are re-checked with it."""
+    current = await resumes.active_resume(s, user.id)
     try:
         r = await resumes.activate_resume(s, user.id, resume_id)
     except resumes.ResumeNotFound:
         raise HTTPException(404, "No such resume") from None
-    return {**resume_json(r), "outdated_drafts": await _outdated(s, user.id, r.id)}
+    rechecking = 0 if current and current.id == r.id else await resumes.recheck_recent(s, user.id)
+    return {**resume_json(r), "rechecking": rechecking, "outdated_drafts": await _outdated(s, user.id, r.id)}
 
 
 @router.delete("/resumes/{resume_id}")
@@ -137,7 +146,7 @@ async def remove(resume_id: int, user: User = Depends(current_user), s: AsyncSes
     except resumes.ResumeNotFound:
         raise HTTPException(404, "No such resume") from None
     except resumes.ActiveResume:
-        raise HTTPException(409, "This is your active resume. Make another one active first.") from None
+        raise HTTPException(409, "This is your primary resume. Make another one primary first.") from None
     except resumes.ResumeInUse:
         raise HTTPException(409, "A scheduled email will attach this resume. Cancel it or let it send first.") from None
     return Response(status_code=204)

@@ -227,6 +227,7 @@ class Job(Base):
     matched_skills: Mapped[list[str]] = _texts()
     gaps: Mapped[list[str]] = _texts()
     flags: Mapped[list[str]] = _texts()
+    resume_id: Mapped[int | None] = mapped_column(ForeignKey("resumes.id", ondelete="SET NULL"))  # who scored it
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

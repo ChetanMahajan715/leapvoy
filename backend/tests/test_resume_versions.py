@@ -64,3 +64,58 @@ def test_scanned_resume_is_read_with_ocr():
     page.insert_image(page.rect, stream=screenshot(*lines))
     text = resume.pdf_or_ocr_text(doc.tobytes())
     assert "BankAssist" in text and "LangChain" in text
+
+
+@requires_db
+async def test_upload_can_keep_the_current_primary(db):
+    uid = await store.get_or_create_user(db, "p@x.com")
+    first = await resume.add_resume(db, uid, "First", make_pdf(AI_RESUME), primary=False)
+    assert first.is_active  # the first resume is always primary
+    second = await resume.add_resume(db, uid, "Second", make_pdf(AI_RESUME), primary=False)
+    assert not second.is_active and (await resume.active_resume(db, uid)).id == first.id
+    third = await resume.add_resume(db, uid, "Third", make_pdf(AI_RESUME))
+    assert (await resume.active_resume(db, uid)).id == third.id
+
+
+@requires_db
+async def test_new_primary_rechecks_recent_jobs_but_not_emailed_or_old_ones(db):
+    from datetime import UTC, datetime, timedelta
+
+    from app.db.models import Channel, Job, Post
+
+    uid = await store.get_or_create_user(db, "r@x.com")
+    await resume.add_resume(db, uid, "Old", make_pdf(AI_RESUME))
+    ch = Channel(user_id=uid, tg_chat_id=-1, title="c", enabled=True)
+    db.add(ch)
+    await db.flush()
+    now = datetime.now(UTC)
+
+    def mk(msg, when, stage, reason=None):
+        p = Post(user_id=uid, channel_id=ch.id, tg_message_id=msg, text="x", posted_at=when, stage=stage,
+                 skip_reason=reason)
+        db.add(p)
+        return p
+
+    fresh, emailed, old, weak = (mk(1, now, "scored"), mk(2, now, "scored"),
+                                 mk(3, now - timedelta(days=5), "scored"), mk(4, now, "skipped", "low_match"))
+    await db.flush()
+    jobs = [Job(user_id=uid, post_id=p.id, idx=0, company="A", role="ML", fit_score=80, verdict="APPLY")
+            for p in (fresh, emailed, old)]
+    db.add_all(jobs)
+    await db.flush()
+    from app.db.models import SenderAccount
+
+    sender = SenderAccount(user_id=uid, email="me@x.com", provider="gmail", password_enc=b"x")
+    db.add(sender)
+    await db.flush()
+    db.add(Send(user_id=uid, job_id=jobs[1].id, to_email="hr@a.com", status="sent", send_at=now, subject="s",
+                body="b", sender_id=sender.id, send_key="k1", test_mode=True))
+    await db.commit()
+
+    assert await resume.recheck_recent(db, uid) == 2  # the fresh scored post + the weak-match post
+    for j in jobs:
+        await db.refresh(j)
+    assert [j.fit_score for j in jobs] == [None, 80, 80]
+    for p in (fresh, weak, old):
+        await db.refresh(p)
+    assert (fresh.stage, weak.stage, old.stage) == ("extracted", "new", "scored")
