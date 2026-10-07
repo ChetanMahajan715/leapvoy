@@ -19,7 +19,7 @@ sends it at the right time, safely. Controlled from one app on Android and the w
 ![Expo](https://img.shields.io/badge/Expo_SDK_57-Android_%2B_Web-000020?logo=expo&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker_Compose-self--healing-2496ED?logo=docker&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-430%2B_passing-16A34A)
+![Tests](https://img.shields.io/badge/tests-449_passing-16A34A)
 ![Cost](https://img.shields.io/badge/running_cost-%E2%82%B90%2Fmonth-F5A524)
 
 <br>
@@ -56,6 +56,8 @@ inbox without your approval, and every claim in an email is checked against your
   extraction and fit score** (structured JSON via Instructor).
 - Professional fit grades (**Excellent · Strong · Good · Possible · Not a fit**) with the reasons, requirements and
   every HR address, plus Google Form / apply-link jobs.
+- **One post, many jobs**: a post listing 15 openings becomes 15 job cards, each matched, scored and shown with only
+  its own part of the post (a long list never hides its later jobs).
 - **Auto-check**: opening a day checks its waiting posts by itself; cards fill in live.
 
 ### ✍️ Writes emails that sound like you
@@ -65,6 +67,8 @@ inbox without your approval, and every claim in an email is checked against your
 - **Editable template** with `{tags}`, live preview and versions (sandboxed: no template code can run).
 - Respects the post: exact subject lines or Job IDs when the post asks for them; one email to all HR addresses of a
   post.
+- **Resume versions**: keep several, pick the **primary** one; every job shows which resume checked it, and switching
+  re-checks recent jobs automatically.
 
 ### 📬 Sends safely, on your schedule
 - Approve one job or **select many → "Write & schedule N emails"** (now, tomorrow 10 AM, or any date and time).
@@ -151,7 +155,7 @@ flowchart LR
 | `pipeline` | LangGraph graph: filter → match → extract → fit score; pauses itself before free AI quotas run out |
 | `sender` | Due emails with every safety rule, reply tracking, push notifications, nightly maintenance |
 | `web` | nginx: serves the Expo web build at `/`, proxies `/api` to the backend (one origin, no CORS) |
-| `db` | Postgres 16 + pgvector, 18 Alembic migrations |
+| `db` | Postgres 16 + pgvector, 19 Alembic migrations |
 
 ### How a post becomes an email
 
@@ -248,7 +252,7 @@ uv run python scripts/dev.py python -m app.workers.sender
 ## Tests
 
 ```bash
-cd backend && uv run pytest          # 430+ tests on a real Postgres 16 + pgvector
+cd backend && uv run pytest          # 449 tests on a real Postgres 16 + pgvector
 cd mobile && npx tsc --noEmit && npx expo lint && npm test
 ```
 
