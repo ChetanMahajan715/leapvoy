@@ -137,7 +137,7 @@ export default function Jobs() {
 
   const header = (
     <View style={{ gap: spacing.md }}>
-      <View style={styles.bar}>
+      <View style={styles.dayBar}>
         <View style={styles.dayNav}>
           <IconButton icon={ChevronLeft} label="Previous day" onPress={() => changeDay(shiftDay(day, -1))} />
           <Pressable
@@ -146,11 +146,11 @@ export default function Jobs() {
             onPress={() => setCalendar(true)}
             style={({ pressed, hovered }: { pressed: boolean; hovered?: boolean }) => [
               styles.dayButton,
-              { backgroundColor: pressed || hovered ? colors.surfaceAlt : undefined },
+              { flexShrink: 1, backgroundColor: pressed || hovered ? colors.surfaceAlt : undefined },
             ]}>
             <View>
               <View style={styles.dayLine}>
-                <Text style={[styles.day, { color: colors.text }]}>{dayTitle(day, today)}</Text>
+                <Text numberOfLines={1} style={[styles.day, { color: colors.text, flexShrink: 1 }]}>{dayTitle(day, today)}</Text>
                 <CalendarDays size={18} color={colors.primaryText} strokeWidth={2} />
               </View>
               {pq.data && q.data ? (
@@ -163,7 +163,9 @@ export default function Jobs() {
           ) : null}
           {day !== today ? <Pill label="Today" onPress={() => changeDay(today)} /> : null}
         </View>
-        <Pill label="Fetch" icon={RefreshCw} busy={fetchNew.isPending} onPress={() => fetchNew.mutate()} />
+        <View style={{ paddingTop: 6 }}>
+          <Pill label="Fetch" icon={RefreshCw} busy={fetchNew.isPending} onPress={() => fetchNew.mutate()} />
+        </View>
       </View>
       {fetched || fetchNew.error ? (
         <View style={[styles.note, { backgroundColor: fetched?.problem || fetchNew.error ? colors.surfaceAlt : colors.primarySoft }]}>
@@ -238,7 +240,9 @@ export default function Jobs() {
 
 const styles = StyleSheet.create({
   bar: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
-  dayNav: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  // day row: Fetch always stays on the right of the first line; if a phone is too narrow, the left side wraps instead
+  dayBar: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.sm },
+  dayNav: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.xs, flex: 1, minWidth: 0 },
   dayButton: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 6, paddingHorizontal: spacing.sm,
     borderRadius: radius.sm },
   day: { fontFamily: fonts.heading, fontSize: 24, letterSpacing: -0.3 },

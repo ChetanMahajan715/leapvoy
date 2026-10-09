@@ -4,6 +4,7 @@ Anything that sends, cancels or moves an email only creates a PendingAction (a C
 it runs when the user taps Confirm (app/chat/actions.py). The AI can never send by itself.
 """
 
+import json
 import re
 import time
 import uuid
@@ -14,16 +15,21 @@ from typing import Any
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.accounts.profile import get_profile
 from app.core.config import get_settings
 from app.db.models import Channel, Draft, Job, Memory, PendingAction, Post, Send
 from app.mailer import drafts, outbox, senders
-from app.llm import usage
+from app.llm import prompts, usage
+from app.llm.router import AIUnreachable, RateLimited, structured
+from app.llm.schemas import ExtractedPost, FitCheck
 from app.mailer.when import parse_when
 from app.pipeline import graph, posts as post_info, report
 from app.pipeline import store as pipeline_store
 from app.telegram import reader
 from app.telegram import store as tg_store
 from app.pipeline.prefilter import prefilter
+from app.pipeline.resume import active_resume
+from app.pipeline.rules import apply_rules
 
 TEST_NOTE = " · TEST MODE: goes to your own inbox"
 FETCH_LIMIT = 60  # posts looked at per "check Telegram now"
@@ -52,8 +58,10 @@ def _fn(name: str, description: str, properties: dict, required: list[str] | Non
 
 _WHEN = {"type": "string", "description": 'India time, e.g. "now", "tomorrow 10am", "monday 10am", "2026-10-01 11:15"'}
 TOOLS = [
-    _fn("list_jobs", "Jobs of one day that fit the user's resume (best first), shown as job cards.",
-        {"date": {"type": "string", "description": '"today", "yesterday" or YYYY-MM-DD (India time)'}}),
+    _fn("list_jobs", "Jobs that fit the user's resume (best first), shown as job cards: one India day, or several "
+        "days ending with `date` (\"last 5 days\" = date today, days 5; \"this week\" = days since Monday).",
+        {"date": {"type": "string", "description": '"today", "yesterday" or YYYY-MM-DD (India time): the LAST day'},
+         "days": {"type": "integer", "description": "how many days ending with date (1 to 31, default 1)"}}),
     _fn("list_posts", "EVERY job posted on one day, fit or not (a Telegram post can list many jobs; each is its own "
         "card with its own score, newest first). Use when the user asks for all jobs / all posts / everything posted.",
         {"date": {"type": "string", "description": '"today", "yesterday" or YYYY-MM-DD (India time)'}}),
@@ -119,18 +127,27 @@ async def _job_lines(s: AsyncSession, jobs: list[Job]) -> list[str]:
     return [f"#{j.id} fit {j.fit_score}/100 {post_info.verdict_label(j.verdict)}: {j.company} · {j.role} ({state(j)}) · {facts(j)}" for j in jobs]
 
 
-async def list_jobs(s, user_id, ctx: Context, date: str = "today") -> ToolResult:
-    d = report.parse_day(date, ctx.now.astimezone(report.IST).date())
-    r = await report.day_report(s, user_id, d)
-    if not r.posts:
-        return ToolResult(f"No posts saved for {d:%d %b} yet. Telegram hasn't been read for that day "
-                          f"(not 'no matches'). Call check_telegram to read it now.")
-    if not r.matches:
-        busy = f"; {r.pending} still being processed, ask again soon" if r.pending else ""
-        return ToolResult(f"No jobs matching the resume on {d:%d %b} ({len(r.posts)} posts read{busy}).")
-    jobs = [j for j, _ in r.matches]
-    return ToolResult("\n".join([f"{len(jobs)} job(s) on {d:%d %b}:", *await _job_lines(s, jobs)]),
-                      {"type": "jobs", "date": d.isoformat(), "job_ids": [j.id for j in jobs]})
+async def list_jobs(s, user_id, ctx: Context, date: str = "today", days: int = 1) -> ToolResult:
+    """Jobs that fit the resume on one India day, or on `days` days ending with `date` ("last 5 days" = today, 5)."""
+    end = report.parse_day(date, ctx.now.astimezone(report.IST).date())
+    span = max(1, min(int(days or 1), 31))
+    reports = [(d, await report.day_report(s, user_id, d)) for d in (end - timedelta(days=i) for i in range(span))]
+    label = f"{end:%d %b}" if span == 1 else f"{end - timedelta(days=span - 1):%d %b} to {end:%d %b}"
+    unread = [d for d, r in reports if not r.posts]
+    if len(unread) == span:
+        return ToolResult(f"No posts saved for {label} yet. Telegram hasn't been read for that period "
+                          f"(not 'no matches'). Call check_telegram (for one day) to read it now.")
+    jobs = [j for _, r in reports for j, _ in r.matches]
+    jobs.sort(key=lambda j: -(j.fit_score or 0))
+    read = sum(len(r.posts) for _, r in reports)
+    pending = sum(r.pending for _, r in reports)
+    gaps = f" Not read from Telegram yet: {', '.join(f'{d:%d %b}' for d in unread)}." if unread else ""
+    if not jobs:
+        busy = f"; {pending} still being processed, ask again soon" if pending else ""
+        return ToolResult(f"No jobs matching the resume on {label} ({read} posts read{busy}).{gaps}")
+    return ToolResult("\n".join([f"{len(jobs)} job(s) matching the resume on {label} ({read} posts read):{gaps}",
+                                 *await _job_lines(s, jobs)]),
+                      {"type": "jobs", "date": end.isoformat(), "job_ids": [j.id for j in jobs]})
 
 
 PASTED_CHANNEL = "Pasted in chat"
@@ -140,10 +157,8 @@ async def analyze_pasted_job(s, user_id, ctx: Context) -> ToolResult:
     """The user's last message is a job post: run it through extract + fit (skipping the channel gates)."""
     text = ctx.last_user_message.replace("\x00", "")
     pre = prefilter(text)
-    if not pre.keep:
-        return ToolResult("The user's last message has no job text with an HR email or apply link. If they mean a job "
-                          "shown earlier in this chat, use that job's #id from the earlier cards (e.g. write_email). "
-                          "Otherwise ask them to send the job text with the HR email in the same message.")
+    if not pre.keep:  # e.g. a LinkedIn post with no email or link: still say how well it fits (nothing saved)
+        return await _fit_only(s, user_id, text)
     ch = (await s.execute(select(Channel).where(Channel.user_id == user_id, Channel.title == PASTED_CHANNEL,
                                                 Channel.tg_chat_id == 0))).scalar_one_or_none()
     if ch is None:  # tg_chat_id 0 + disabled: never read from Telegram
@@ -169,6 +184,42 @@ async def analyze_pasted_job(s, user_id, ctx: Context) -> ToolResult:
     return ToolResult("\n".join([f"{len(jobs)} job(s) from the pasted post:", *await _job_lines(s, list(jobs))]),
                       {"type": "jobs", "date": ctx.now.astimezone(report.IST).date().isoformat(),
                        "job_ids": [j.id for j in jobs]})
+
+
+async def _fit_only(s, user_id, text: str) -> ToolResult:
+    """A pasted job with no email address or apply link: read it and score the fit against the resume, without
+    saving a job (no card): the user gets the score and reasons, and can send the email address to get an email."""
+    if len(text.split()) < 15:
+        return ToolResult("The user's message isn't a job post. If they mean a job shown earlier in this chat, use that "
+                          "job's #id (e.g. write_email); otherwise answer their message directly.")
+    resume = await active_resume(s, user_id)
+    if resume is None:
+        return ToolResult("Add a resume first (Setup → Resumes), then paste the job again.")
+    try:
+        found = (await structured("small", [{"role": "system", "content": prompts.load("extract")},
+                                            {"role": "user", "content": text}], ExtractedPost)).jobs
+        if not found:
+            return ToolResult("That text doesn't describe a job opening (no company and role found). Say so plainly.")
+        system = prompts.load("fit").format(profile=json.dumps(await get_profile(s, user_id), ensure_ascii=False),
+                                            resume=resume.text)
+        lines = []
+        for j in found[:3]:
+            facts = json.dumps({k: getattr(j, k) for k in ("company", "role", "experience", "location", "work_mode",
+                                                           "must_have_skills", "salary_or_stipend")}, ensure_ascii=False)
+            fit = apply_rules(await structured("large", [{"role": "system", "content": system},
+                                                         {"role": "user", "content": f"Job:\n{facts}\n\nOriginal post:\n{text}"}],
+                                               FitCheck), j.role)
+            lines.append(f"{j.role} · {j.company}: fit {fit.score}/100 {post_info.verdict_label(fit.verdict)}. "
+                         f"Matches: {', '.join(fit.matched_skills[:5]) or 'none'}. Gaps: {', '.join(fit.gaps[:4]) or 'none'}."
+                         + (f" Notes: {'; '.join(fit.flags[:3])}." if fit.flags else ""))
+    except AIUnreachable:
+        return ToolResult("Can't reach the AI services right now (internet or provider down). Paste the job again in a minute.")
+    except RateLimited:
+        return ToolResult("The free AI is busy right now. Paste the job again in a minute.")
+    return ToolResult("\n".join([
+        "Fit for the pasted job (it has no email address or apply link, so no job card or email yet):", *lines,
+        "Tell the user the score and the main reasons in 2-3 short sentences. Then say: if they send the email address "
+        "(or paste the post again with it), you will write the application email. Never invent an address."]))
 
 
 def _post_lines(rows: list[tuple[dict, float | None, list[Job]]], with_day: bool) -> list[str]:
@@ -210,7 +261,8 @@ async def _posts_result(s, user_id, posts: list[Post], head: str, with_day: bool
 async def list_posts(s, user_id, ctx: Context, date: str = "today") -> ToolResult:
     d = report.parse_day(date, ctx.now.astimezone(report.IST).date())
     start, end = report.day_bounds(d)
-    posts = (await s.execute(select(Post).where(Post.user_id == user_id, Post.posted_at >= start, Post.posted_at < end)
+    posts = (await s.execute(select(Post).where(Post.user_id == user_id, Post.posted_at >= start, Post.posted_at < end,
+                                                report.from_telegram(user_id))
                              .order_by(Post.posted_at.desc(), Post.tg_message_id.desc()))).scalars().all()
     if not posts:
         return ToolResult(f"No jobs saved for {d:%d %b} yet (Telegram not read for that day). Call check_telegram to read it now.")

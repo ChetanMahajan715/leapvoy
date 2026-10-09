@@ -8,10 +8,20 @@ from pathlib import Path
 DOC = Path(__file__).resolve().parents[3] / "docs" / "templates" / "Leapvoy-Default-Email-Template.md"
 
 
+USER_DOC = Path(__file__).resolve().parents[1] / "llm" / "prompts" / "v1" / "email_examples.md"
+
+
 @cache
 def load() -> list[str]:
     section = DOC.read_text(encoding="utf-8").split("## 5. Examples")[1]
     return [b.strip("\n") for b in re.findall(r"```\n(.*?)```", section, re.S)]
+
+
+@cache
+def load_style() -> list[str]:
+    """Style examples for the AI: the user's own recent emails first, then the 3 approved template samples."""
+    section = USER_DOC.read_text(encoding="utf-8").split("## Examples")[1]
+    return [b.strip("\n") for b in re.findall(r"```\n(.*?)```", section, re.S)] + load()
 
 
 def slots_from(email: str) -> dict:

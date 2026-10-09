@@ -9,12 +9,11 @@ import { fonts, radius, spacing } from '@/theme/theme';
 import { useColors } from '@/theme/use-colors';
 
 export type Choice = { when: string; label: string };
-type Quick = 'now' | 'hour' | 'tomorrow';
+type Quick = 'now' | 'tomorrow';
 
-const QUICK: Record<Quick, Choice & { icon: typeof Clock; sub: string }> = {
-  now: { when: 'now', label: 'now', icon: Send, sub: 'Spaced 3–8 minutes apart' },
-  hour: { when: 'in 1 hour', label: 'in 1 hour', icon: Clock, sub: 'From now' },
-  tomorrow: { when: 'tomorrow 10am', label: 'tomorrow at 10 AM', icon: Sunrise, sub: 'A good time to land in inboxes' },
+const QUICK: Record<Quick, Choice & { icon: typeof Clock; title: string; sub: string }> = {
+  now: { when: 'now', label: 'now', title: 'Send now', icon: Send, sub: 'Spaced 3–8 minutes apart' },
+  tomorrow: { when: 'tomorrow 10am', label: 'tomorrow at 10 AM', title: 'Tomorrow at 10 AM', icon: Sunrise, sub: 'A good time to land in inboxes' },
 };
 
 export function ScheduleSheet({
@@ -66,7 +65,7 @@ export function ScheduleSheet({
         <View style={{ gap: spacing.sm }}>
           {quick.map((k) => {
             const q = QUICK[k];
-            return option(k, q.icon, q.label[0].toUpperCase() + q.label.slice(1), q.sub, () => choose(q));
+            return option(k, q.icon, q.title, q.sub, () => choose(q));
           })}
           {option('pick', CalendarDays, 'Pick date & time', 'Any day and time (India time)', () => setCalendar(true))}
         </View>

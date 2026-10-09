@@ -86,7 +86,7 @@ function ScheduledRow({ send }: { send: Send }) {
       <ScheduleSheet
         open={moving}
         title="Move it to…"
-        quick={['hour', 'tomorrow']}
+        quick={['now', 'tomorrow']}
         onClose={() => setMoving(false)}
         onChoose={(c) => {
           setMoving(false);

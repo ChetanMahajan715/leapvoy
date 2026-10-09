@@ -92,7 +92,8 @@ async def respond(
     done: set[tuple[str, str]] = set()  # (tool, args) already run this turn: small models sometimes repeat a call
     for _ in range(MAX_ROUNDS):
         calls = []
-        async for kind, value in stream_chat("small", messages, tools.TOOLS, prefer=model):
+        # the larger model (user, 9 Oct: the small one called tools nobody asked for and guessed answers)
+        async for kind, value in stream_chat("large", messages, tools.TOOLS, prefer=model):
             if kind == "text":
                 yield {"type": "text", "text": no_em_dash(value)}
             elif kind == "model":

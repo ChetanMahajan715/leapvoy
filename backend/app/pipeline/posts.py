@@ -82,7 +82,8 @@ async def describe_all(s: AsyncSession, user_id: uuid.UUID, posts: list[Post]) -
 async def day_posts(s: AsyncSession, user_id: uuid.UUID, d: date) -> list[dict]:
     """Every saved post of that India day, newest first (Telegram's own posting time)."""
     start, end = report.day_bounds(d)
-    posts = (await s.execute(select(Post).where(Post.user_id == user_id, Post.posted_at >= start, Post.posted_at < end)
+    posts = (await s.execute(select(Post).where(Post.user_id == user_id, Post.posted_at >= start, Post.posted_at < end,
+                                                report.from_telegram(user_id))
                              .order_by(Post.posted_at.desc(), Post.tg_message_id.desc()))).scalars().all()
     return await describe_all(s, user_id, list(posts))
 

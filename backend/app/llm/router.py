@@ -11,6 +11,7 @@ import instructor
 import litellm
 import structlog
 from instructor.core import InstructorRetryException
+from instructor.core.exceptions import IncompleteOutputException
 from pydantic import BaseModel
 
 from app.core.config import Settings, get_settings
@@ -29,6 +30,7 @@ FALLBACK_ON = (
     litellm.InternalServerError,
     litellm.Timeout,
     InstructorRetryException,
+    IncompleteOutputException,  # the model ran out of output tokens mid-answer (seen 9 Oct): try the next one
 )
 
 

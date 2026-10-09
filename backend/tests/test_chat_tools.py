@@ -179,10 +179,41 @@ async def test_pasting_twice_uses_one_pasted_channel(db, smtp, llm, match):
     assert (await db.execute(select(func.count()).where(Channel.title == "Pasted in chat"))).scalar_one() == 1
 
 
-async def test_text_without_email_or_link_is_explained_without_ai(db, smtp, llm, match):
+async def test_a_short_message_is_not_treated_as_a_job(db, smtp, llm, match):
     uid, _ = await setup(db)
     r = await paste(db, uid, "We are hiring an AI engineer, DM me")
-    assert r.card is None and "email or apply link" in r.text and llm.calls == []
+    assert r.card is None and "isn't a job post" in r.text and llm.calls == []
+
+
+LINKEDIN = ("Excited to share we're hiring! Acme AI is looking for an AI Engineer (0-2 years) in Pune to build RAG "
+            "pipelines and LLM agents with Python and LangChain. Comment 'interested' or DM me to know more.")
+
+
+async def test_a_linkedin_post_without_an_email_still_gets_a_fit_score(db, smtp, llm, match, monkeypatch):
+    """User, 9 Oct: a pasted LinkedIn post with no email used to be refused. Now: score + reasons, nothing saved."""
+    monkeypatch.setattr(tools, "structured", llm)
+    uid, _ = await setup(db)
+    jobs_before = (await db.execute(select(func.count()).select_from(Job))).scalar_one()
+    r = await paste(db, uid, LINKEDIN)
+    assert r.card is None and "fit 82/100" in r.text and "no email address" in r.text
+    assert llm.calls == ["ExtractedPost", "FitCheck"]
+    assert (await db.execute(select(func.count()).select_from(Job))).scalar_one() == jobs_before
+
+
+async def test_pasted_jobs_stay_in_chat_not_in_the_days_telegram_lists(db, smtp, llm, match):
+    uid, jobs = await setup(db)
+    await paste(db, uid)  # dated NOW (30 Sep), the same day as the Telegram job from setup
+    day = NOW.astimezone(report.IST).date()
+    listed = [j.id for j, _ in (await report.day_report(db, uid, day)).matches]
+    pasted = (await db.execute(select(Job.id).where(Job.company == "Acme AI"))).scalar_one()
+    assert pasted not in listed and jobs[0] in listed
+
+
+async def test_last_n_days_checks_every_day_and_names_the_unread_ones(db, smtp):
+    uid, jobs = await setup(db)  # one matching job on 30 Sep
+    r = await run(db, uid, "list_jobs", date="2026-10-02", days=5)
+    assert r.card and jobs[0] in r.card["job_ids"]
+    assert "28 Sep to 02 Oct" in r.text and "Not read from Telegram yet" in r.text and "01 Oct" in r.text
 
 
 # --- check Telegram now + honest empty days -----------------------------------------------

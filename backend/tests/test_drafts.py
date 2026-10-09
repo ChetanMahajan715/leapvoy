@@ -13,7 +13,7 @@ from tests.conftest import requires_db
 pytestmark = requires_db
 NOW = datetime(2026, 9, 29, 10, 0, tzinfo=UTC)
 RESUME = (
-    "Chetan Mahajan. AI/ML Engineer (LLMs, RAG). BankAssist: RAG banking chatbot with LangChain, FAISS, Groq LLaMA 3.3, FastAPI, Streamlit; "
+    "Chetan Mahajan. AI/ML Engineer (LLMs, RAG, Deep Learning). BankAssist: RAG banking chatbot with LangChain, FAISS, Groq LLaMA 3.3, FastAPI, Streamlit; "
     "850+ indexed documents; deployed on AWS EC2 with CI/CD using GitHub Actions. LexIQ: legal research assistant "
     "with ChromaDB and Sentence Transformers. Chest X-ray classifier with DenseNet121 and PyTorch, 97.8% accuracy. "
     "Data Science Intern at Vcity Soft Solutions: ML pipelines with Python, XGBoost, LightGBM; 7% improvement."
@@ -97,8 +97,21 @@ async def test_clean_draft_is_saved_from_template(db, llm):
     assert len(fake.calls) == 1
 
 
-async def test_invented_skill_triggers_a_rewrite_with_feedback(db, llm):
-    fake = llm(INVENTED, GOOD)
+async def test_an_invented_bullet_is_dropped_without_another_ai_call(db, llm):
+    """3 sound bullets remain, so the invented one just goes (faster, saves free AI quota)."""
+    fake = llm(INVENTED)
+    uid, job_id = await make_job(db)
+    d = await drafts.write_draft(db, uid, job_id)
+    assert (d.status, d.issues) == ("draft", []) and "Kubernetes" not in d.body and len(fake.calls) == 1
+
+
+THREE_ONE_INVENTED = GOOD.model_copy(update={"fit_bullets": [
+    *GOOD.fit_bullets[:2], FitBullet(label="Deployment", proof="Deployed models with Kubernetes and Docker on AWS EC2."),
+]})
+
+
+async def test_too_few_sound_bullets_are_sent_back_with_the_reason(db, llm):
+    fake = llm(THREE_ONE_INVENTED, GOOD)
     uid, job_id = await make_job(db)
     d = await drafts.write_draft(db, uid, job_id)
     assert (d.status, d.issues) == ("draft", [])
@@ -106,7 +119,7 @@ async def test_invented_skill_triggers_a_rewrite_with_feedback(db, llm):
 
 
 async def test_still_invented_after_rewrites_needs_review(db, llm):
-    fake = llm(INVENTED)
+    fake = llm(THREE_ONE_INVENTED)
     uid, job_id = await make_job(db)
     d = await drafts.write_draft(db, uid, job_id)
     assert d.status == "needs_review" and "not in your resume: Kubernetes, Docker" in d.issues[0]
@@ -181,10 +194,36 @@ def test_em_dashes_never_reach_an_email():
 
 
 def test_style_examples_drop_claims_the_current_resume_does_not_back():
-    ex = drafts.style_examples("BankAssist LexIQ LangChain FAISS ChromaDB Groq LLaMA 3.3 Hugging Face Transformers "
-                               "Python AWS EC2 CI/CD S3 CloudWatch 2026 BCA Pune Vcity Soft Solutions")
+    ex = drafts.style_examples(  # a resume with BankAssist and LexIQ in its own words, but no LangGraph project
+        "Built BankAssist, a full-stack RAG banking chatbot, and LexIQ, a legal research assistant, using LangChain, "
+        "FAISS, ChromaDB, Groq LLaMA 3.3, and Hugging Face Transformers, both deployed end-to-end. "
+        "Python AWS EC2 CI/CD S3 CloudWatch 2026 BCA Pune Vcity Soft Solutions")
     assert "LangGraph" not in ex  # the multi-agent project isn't on this resume
     assert "BankAssist" in ex  # backed bullets stay as style guidance
+
+
+def test_bullets_from_how_to_apply_or_invented_wording_are_sent_back():
+    """User, 9 Oct: no 'Send resume: …' bullets and no claims the resume doesn't say."""
+    from app.mailer.guard import instruction_labels, ungrounded_proofs
+
+    assert instruction_labels([{"label": "Send resume", "proof": ""}, {"label": "RAG and LangChain", "proof": ""}]) == [
+        "Send resume"]
+    real = {"label": "Computer Vision", "proof": "Chest X-ray classifier with DenseNet121 and PyTorch, 97.8% accuracy."}
+    invented = {"label": "Leadership", "proof": "Led a team of five engineers to ship a recommender used by thousands."}
+    assert ungrounded_proofs([real, invented], RESUME) == ["Leadership"]
+
+
+def test_closing_line_is_fixed_text_from_the_profile():
+    from types import SimpleNamespace
+
+    from app.mailer.rules import closing_line
+
+    job = SimpleNamespace(work_mode="onsite", location="Pune")
+    p = PROFILE | {"education": "BCA (Cloud Computing & System Administration)", "availability": "Immediate Joiner"}
+    assert closing_line(job, p) == ("I am a BCA (Cloud Computing and System Administration) graduate, "
+                                    "immediately available, and based in Pune.")
+    away = SimpleNamespace(work_mode="onsite", location="Noida, Uttar Pradesh")
+    assert closing_line(away, PROFILE).endswith("immediately available, and open to relocating to Noida.")
 
 
 async def test_missing_profile_fields_are_named_before_any_ai_call(db, llm):
@@ -194,3 +233,23 @@ async def test_missing_profile_fields_are_named_before_any_ai_call(db, llm):
     with pytest.raises(drafts.ProfileIncomplete) as e:
         await drafts.write_draft(db, uid, job_id)
     assert e.value.missing == ["GitHub link"] and fake.calls == []
+
+
+def test_a_fact_stays_with_its_own_project():
+    """Seen 9 Oct: 'Leapvoy ... served via Nginx on AWS EC2' when EC2 and Nginx belong to BankAssist."""
+    from app.mailer.guard import misattributed
+
+    resume = ("Projects\nLeapvoy: AI Job-Outreach Agent | FastAPI, LangGraph, Docker\n"
+              "• Delivered a FastAPI backend, deployed with Docker Compose.\n"
+              "BankAssist: Banking RAG Chatbot | FAISS, AWS EC2\n• Deployed to AWS EC2 behind an Nginx reverse proxy.\n"
+              "Education\nBCA")
+    mixed = {"label": "Deployment", "proof": "Deployed Leapvoy with Docker Compose behind Nginx on AWS EC2."}
+    right = {"label": "Cloud", "proof": "Deployed BankAssist to AWS EC2 behind Nginx, and Leapvoy with Docker Compose."}
+    assert misattributed([mixed, right], resume) == ["Deployment"]
+
+
+def test_labels_get_title_case_but_tool_names_keep_their_spelling():
+    resume = "Databases and Vector Search: PostgreSQL, pgvector, FAISS\nBuilt data pipelines for deployment."
+    assert drafts._title("vector databases and pgvector", resume) == "Vector Databases and pgvector"
+    assert drafts._title("data pipelines and deployment", resume) == "Data Pipelines and Deployment"
+    assert drafts._title("RAG and LangChain", resume) == "RAG and LangChain"

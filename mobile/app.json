@@ -2,7 +2,7 @@
   "expo": {
     "name": "Leapvoy",
     "slug": "leapvoy",
-    "version": "1.1.4",
+    "version": "1.1.5",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "leapvoy",
@@ -15,7 +15,7 @@
         "backgroundColor": "#0C0F1A"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 6,
+      "versionCode": 7,
       "permissions": [
         "android.permission.USE_BIOMETRIC",
         "android.permission.USE_FINGERPRINT"

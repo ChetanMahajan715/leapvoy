@@ -740,7 +740,7 @@ export function JobCard({
       {error ? <Small color={colors.error}>{errorMessage(error)}</Small> : null}
       <ScheduleSheet
         open={scheduling}
-        quick={['tomorrow']}
+        quick={['now', 'tomorrow']}
         onClose={() => setScheduling(false)}
         onChoose={(c) => {
           setScheduling(false);

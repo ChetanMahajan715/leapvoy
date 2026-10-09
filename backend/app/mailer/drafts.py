@@ -20,9 +20,9 @@ from app.llm import prompts
 from app.llm.router import structured
 from app.llm.schemas import EmailSlots
 from app.mailer import examples, templates
-from app.mailer.guard import unsupported_claims
+from app.mailer.guard import instruction_labels, misattributed, unbacked_labels, ungrounded_proofs, unsupported_claims
 from app.mailer.render import MAX_WORDS, MIN_WORDS, default_template, render, word_count
-from app.mailer.rules import hr_first_name, location_phrase, subject_parts
+from app.mailer.rules import closing_line, hr_first_name, location_phrase, subject_parts
 from app.pipeline.resume import active_resume
 from app.pipeline.sections import excerpt
 
@@ -59,11 +59,13 @@ def style_examples(resume_text: str) -> str:
     """The approved sample emails as style guidance, minus any bullet the CURRENT resume doesn't back,
     so the AI can't copy old facts (e.g. a project that is no longer on the resume)."""
     parts = []
-    for email in examples.load():
+    for email in examples.load_style():
         s = examples.slots_from(email)
-        backed = [b for b in s["fit_bullets"] if not unsupported_claims([b], "", resume_text)]
+        backed = [b for b in s["fit_bullets"] if not unsupported_claims([b], "", resume_text)
+                  and not ungrounded_proofs([b], resume_text) and not misattributed([b], resume_text)]
         bullets = "\n".join(f"- {b['label']}: {b['proof']}" for b in backed)
-        parts.append(f"[{s['role']} at {s['company']}]\nopening_line: {s['opening_line']}\n"
+        opening = re.sub(r",? and I am (based|available|comfortable)[^.]*", "", s["opening_line"])  # closing says it
+        parts.append(f"[{s['role']} at {s['company']}]\nopening_line: {opening}\n"
                      f"fit_bullets:\n{bullets}\nclosing_line: {s['closing_line']}")
     return "\n\n".join(parts)
 
@@ -72,13 +74,40 @@ _PLAIN = str.maketrans({"‐": "-", "‑": "-", " ": " ", " ": " ", " ": " 
 
 
 EM_DASH = chr(0x2014)
+_SAYS_WHERE = re.compile(r"\b(remote|remotely|relocat\w*|based in|available|availability|join\w*|immediate\w*)\b", re.I)
 
 
 def plain(slots: EmailSlots) -> EmailSlots:
     """Non-breaking hyphens/spaces from the AI → normal characters (they show as odd symbols in some mail apps).
     The em dash is never used (user's rule): " X " becomes ", ", a joined one a hyphen."""
     text = slots.model_dump_json().replace(f" {EM_DASH} ", ", ").replace(EM_DASH, "-")
+    text = text.replace(chr(0x2013), "-").replace(" & ", " and ")  # the user writes 30-80 and "and" (9 Oct)
     return EmailSlots.model_validate_json(text.translate(_PLAIN))
+
+
+_SMALL = {"and", "or", "of", "with", "for", "in", "on", "the", "a", "an", "to", "via", "at", "by"}
+
+
+def _title(label: str, resume_text: str = "") -> str:
+    """'Python and backend development' -> 'Python and Backend Development' (the user's emails use Title Case);
+    words that already have capitals (RAG, FastAPI) or are written that way in the resume (pgvector) stay as is."""
+    tools = {x.strip() for line in resume_text.splitlines() if ":" in line and "," in line  # skills lists
+             for x in line.split(":", 1)[1].split(",")}
+    words = label.split()
+    return " ".join(w if (i and w.lower() in _SMALL) or any(c.isupper() for c in w) or w in tools
+                    else w[:1].upper() + w[1:] for i, w in enumerate(words))
+
+
+def _keep_sound_bullets(slots: EmailSlots, resume_text: str, profile: dict) -> EmailSlots:
+    """Bullets that fail a check are dropped right away when at least 3 sound ones remain (no extra AI call);
+    otherwise they stay, and the checks send them back to the AI with the reasons. Labels get Title Case."""
+    profile_text = " ".join(str(v) for v in profile.values())
+    sound = [b for b in slots.fit_bullets
+             if not (unsupported_claims([b.model_dump()], "", resume_text, profile_text)
+                     or instruction_labels([b.model_dump()]) or unbacked_labels([b.model_dump()], resume_text)
+                     or ungrounded_proofs([b.model_dump()], resume_text) or misattributed([b.model_dump()], resume_text))]
+    bullets = sound if len(sound) >= 3 else slots.fit_bullets
+    return slots.model_copy(update={"fit_bullets": [b.model_copy(update={"label": _title(b.label, resume_text)}) for b in bullets]})
 
 
 def _problems(slots: EmailSlots, body: str, resume_text: str, profile: dict,
@@ -88,6 +117,21 @@ def _problems(slots: EmailSlots, body: str, resume_text: str, profile: dict,
     problems = []
     if claims := unsupported_claims(bullets, slots.closing_line, resume_text, profile_text, slots.opening_line):
         problems.append(f"These are not in your resume: {', '.join(claims)}. Remove them or use only resume facts.")
+    if labels := instruction_labels(bullets):
+        problems.append(f"These bullet labels are instructions from the post, not skills: {'; '.join(labels)}. "
+                        "Use a skill or requirement from the post as the label instead.")
+    if labels := unbacked_labels(bullets, resume_text):
+        problems.append(f"These labels name nothing the resume shows: {'; '.join(labels)}. Use a requirement the "
+                        "resume really covers (a tool, method or area it names), or leave that bullet out.")
+    if _SAYS_WHERE.search(slots.opening_line):
+        problems.append("The opening must not mention location, remote work or availability: the closing line "
+                        "already says it. Keep the opening to the skills that match.")
+    if labels := misattributed(bullets, resume_text):
+        problems.append(f"The proofs for {'; '.join(labels)} mix projects: a tool or number from one project is "
+                        "written under another. Keep each fact with the project the resume lists it under.")
+    if labels := ungrounded_proofs(bullets, resume_text):
+        problems.append(f"The proofs for {'; '.join(labels)} are not in the resume's own words. Rewrite them with "
+                        "the resume's wording (project, tools, result), or leave those bullets out.")
     lo, hi = bounds
     if not lo <= (n := word_count(body)) <= hi:
         problems.append(f"The email is {n} words; it must be {lo}–{hi} words.")
@@ -117,12 +161,12 @@ async def write_draft(s: AsyncSession, user_id: uuid.UUID, job_id: int, model: s
     own = excerpt(post.text, names, job.idx, job.hr_emails, job.apply_links)  # this job's part of a multi-job post
     fixed = {"role": job.role, "company": job.company, "hr_first_name": hr_first_name(job.hr_name),
              "subject_override": override, "subject_extras": extras, "profile": profile}
-    facts = {
+    closing = closing_line(job, profile)
+    facts = {  # what the job needs, not how to apply (that's where "Send resume: …" bullets came from)
         "job": {k: getattr(job, k) for k in ("company", "role", "experience", "location", "work_mode",
-                                             "must_have_skills", "apply_instructions")},
+                                             "must_have_skills")},
         "fit_check": job.fit_rows or [],
-        "education": profile.get("education"),
-        "availability": profile.get("availability"),
+        "closing_line": closing,
         "location_phrase": location_phrase(job, profile),
     }
     messages = [
@@ -133,8 +177,12 @@ async def write_draft(s: AsyncSession, user_id: uuid.UUID, job_id: int, model: s
     bounds = word_bounds(tpl.jinja, fixed)
     for _ in range(MAX_ATTEMPTS):
         slots = plain(await structured("large", messages, EmailSlots, temperature=0.3, prefer=model))
-        values = fixed | slots.model_dump()
-        subject, body = render(tpl.jinja, **values)
+        slots.closing_line = closing  # fixed text from the profile, never the AI's
+        slots = _keep_sound_bullets(slots, resume.text, profile)
+        subject, body = render(tpl.jinja, **(fixed | slots.model_dump()))
+        while word_count(body) > bounds[1] and len(slots.fit_bullets) > 3:  # too long: drop the least important
+            slots.fit_bullets = slots.fit_bullets[:-1]
+            subject, body = render(tpl.jinja, **(fixed | slots.model_dump()))
         problems = _problems(slots, body, resume.text, profile, bounds)
         if not problems:
             break

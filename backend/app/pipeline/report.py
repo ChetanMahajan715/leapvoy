@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime, time, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Job, Post
+from app.db.models import Channel, Job, Post
 from app.pipeline.store import PENDING
 
 # ponytail: India only (no DST, so a fixed offset is exact); per-user time zones when other users need them
@@ -37,9 +37,15 @@ def parse_day(text: str, now: date | None = None) -> date:
     return words.get(text.strip().lower()) or date.fromisoformat(text)
 
 
+def from_telegram(user_id: uuid.UUID):
+    """Posts read from Telegram channels: jobs pasted in chat stay in the chat (user, 9 Oct), they are not a day's
+    Telegram jobs (their emails still show in Scheduled / Sent)."""
+    return Post.channel_id.in_(select(Channel.id).where(Channel.user_id == user_id, Channel.tg_chat_id != 0))
+
+
 async def day_report(s: AsyncSession, user_id: uuid.UUID, d: date) -> DayReport:
     start, end = day_bounds(d)
-    in_day = (Post.user_id == user_id, Post.posted_at >= start, Post.posted_at < end)
+    in_day = (Post.user_id == user_id, Post.posted_at >= start, Post.posted_at < end, from_telegram(user_id))
     posts = (await s.execute(select(Post).where(*in_day).order_by(Post.posted_at))).scalars().all()
     matches = (
         await s.execute(

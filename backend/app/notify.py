@@ -12,7 +12,7 @@ import structlog
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Device, Notification, Post, User, UserSettings
+from app.db.models import Channel, Device, Notification, Post, User, UserSettings
 from app.pipeline import report
 from app.pipeline.posts import verdict_label
 
@@ -75,6 +75,8 @@ async def job_alerts(s: AsyncSession, post: Post, jobs, now: datetime) -> None:
     """After a post is scored: one inbox row per good fit (fresh posts only)."""
     if post.posted_at < now - FRESH:
         return
+    if await s.scalar(select(Channel.tg_chat_id).where(Channel.id == post.channel_id)) == 0:
+        return  # a job the user pasted in chat: they already know about it
     for j in jobs:
         if j.verdict not in FITS:
             continue
